@@ -1,0 +1,8 @@
+{
+  "name": "RPR TV FREE",
+  "description": "Plataforma e player de transmissão de TV ao vivo e IPTV com reprodução em alta definição.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

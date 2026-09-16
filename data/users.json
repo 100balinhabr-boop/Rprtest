@@ -1,0 +1,23 @@
+[
+  {
+    "id": "user_admin",
+    "username": "admin",
+    "name": "Administrador",
+    "email": "admin@iptvpro.local",
+    "salt": "f2868b5ad1823410326c4626aefa5fc5",
+    "passwordHash": "849bad6da54ce05b16bac27adc645771a72f79efd1a77fc1d405e66f69d217fe86eeae17a864cfa950b3a2112759f603004e3ca94697b91bcaf8cd216b23c45c",
+    "role": "admin",
+    "createdAt": "2026-09-16T18:58:39.686Z"
+  },
+  {
+    "id": "user_1789585594282_sba9h",
+    "username": "reis",
+    "name": "Reis Silva",
+    "passwordHash": "a13c452e98c02e3831a9c686e6ebacdf27299880fb163b3623ccb8f70824f1eb35eedceaa2e342517adbf2aa8fab292732d53d31f4d28abb81aacb2d6e771b83",
+    "salt": "c26d0cab101df8cffac66bae813d7985",
+    "role": "user",
+    "createdAt": "2026-09-16T19:06:34.282Z",
+    "isBlocked": false,
+    "email": "reis@iptv.com"
+  }
+]
