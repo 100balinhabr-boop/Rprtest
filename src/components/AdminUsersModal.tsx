@@ -101,7 +101,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [formPassword, setFormPassword] = useState<string>('');
   const [formRole, setFormRole] = useState<'UsuarioComum' | 'AdminRevenda' | 'AdminMaster'>('UsuarioComum');
   const [formExpirationDate, setFormExpirationDate] = useState<string>(() => {
-    // Padrão: 30 dias a partir de hoje
     const d = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     return d.toISOString().split('T')[0];
   });
@@ -125,9 +124,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [editShowPassword, setEditShowPassword] = useState<boolean>(false);
   const [editIsBlocked, setEditIsBlocked] = useState<boolean>(false);
   const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
-
-  // State for in-app delete confirmation modal
-  const [userToDelete, setUserToDelete] = useState<UserAccount | null>(null);
 
   // State for quick renew modal/popover
   const [renewingUser, setRenewingUser] = useState<UserAccount | null>(null);
@@ -184,7 +180,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   };
 
   const handleSetEditExpirationDays = (days: number) => {
-    // Se a data do usuário ainda for válida no futuro, acrescenta dias a partir dela
     let baseTime = Date.now();
     if (editExpirationDate) {
       const existing = new Date(`${editExpirationDate.slice(0, 10)}T23:59:59`).getTime();
@@ -210,7 +205,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
       return;
     }
 
-    // Se o operador for AdminRevenda, trava o cargo em UsuarioComum
     const assignedRole = isRevenda ? 'UsuarioComum' : formRole;
 
     setIsSubmittingNewUser(true);
@@ -251,7 +245,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           text: `Usuário @${cleanUsername} (${assignedRole}) cadastrado com sucesso!`,
         });
 
-        // Reset form
         setFormName('');
         setFormUsername('');
         setFormEmail('');
@@ -414,7 +407,8 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     }
   };
 
-  const handleDeleteUser = (user: UserAccount) => {
+  // EXCLUIR USUÁRIO — usa window.confirm nativo (mais confiável no celular)
+  const handleDeleteUser = async (user: UserAccount) => {
     const targetRole = normalizeUserRole(user.role);
 
     if (user.id === currentAdmin.id) {
@@ -427,9 +421,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
       return;
     }
 
-    // Regra explícita do usuário:
-    // "AdmimMaster ( e a principal conta que pode remover admin Revenda e adicionar )"
-    // "AdminRevenda ( só pode adicionar usuário comun )"
     if (isRevenda && targetRole !== 'UsuarioComum') {
       setFeedbackMsg({ 
         type: 'error', 
@@ -438,19 +429,17 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
       return;
     }
 
-    setUserToDelete(user);
-  };
+    const confirmado = window.confirm(
+      `Excluir permanentemente a conta de @${user.username} (${targetRole})?\n\nTodas as sessões ativas serão canceladas e o acesso será revogado.`
+    );
+    if (!confirmado) return;
 
-  const handleConfirmDelete = async () => {
-    if (!userToDelete) return;
-    const target = userToDelete;
-
-    setActionLoadingId(target.id);
+    setActionLoadingId(user.id);
     setFeedbackMsg(null);
 
     try {
       const token = getAuthToken();
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(target.id)}`, {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -458,8 +447,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
 
       if (data.success && data.users) {
         setUsers(data.users);
-        setFeedbackMsg({ type: 'success', text: data.message || `Usuário @${target.username} excluído com sucesso.` });
-        setUserToDelete(null);
+        setFeedbackMsg({ type: 'success', text: data.message || `Usuário @${user.username} excluído com sucesso.` });
       } else {
         setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao excluir usuário.' });
       }
@@ -470,7 +458,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     }
   };
 
-  // Ação rápida: renovar vencimento do usuário (+dias ou data personalizada)
   const handleQuickRenew = async (targetUser: UserAccount, days: number, customDate?: string) => {
     setActionLoadingId(targetUser.id);
     setIsRenewing(true);
@@ -542,13 +529,11 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     const role = normalizeUserRole(u.role);
     const expInfo = getExpirationInfo(u.expirationDate);
 
-    // Filtro por categoria de role ou status de vencimento
     if (filterRole === 'UsuarioComum' && role !== 'UsuarioComum') return false;
     if (filterRole === 'AdminRevenda' && role !== 'AdminRevenda') return false;
     if (filterRole === 'AdminMaster' && role !== 'AdminMaster') return false;
     if (filterRole === 'expired' && !expInfo.isExpired) return false;
 
-    // Filtro por busca textual
     const q = searchQuery.toLowerCase().trim();
     if (!q) return true;
     return (
@@ -572,7 +557,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
         id="admin-users-modal"
         className="w-full max-w-4xl bg-[#0C1222] border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
       >
-        {/* Modal Header */}
         <div className="px-5 py-3.5 bg-[#111A2E] border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md ${
@@ -615,7 +599,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </button>
         </div>
 
-        {/* Notice Banner based on role */}
         <div className={`px-5 py-2 text-xs flex items-center justify-between border-b ${
           isMaster
             ? 'bg-amber-950/30 text-amber-200 border-amber-800/40'
@@ -634,7 +617,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
             </span>
           </div>
 
-          {/* Registration Lock Toggle (only Master can toggle) */}
           {isMaster ? (
             <div className="flex items-center gap-2 bg-slate-900/60 px-2 py-0.5 rounded-lg border border-slate-700/60">
               <span className="text-slate-300 font-medium text-[10px]">
@@ -671,7 +653,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           )}
         </div>
 
-        {/* Navigation Tabs: List Users vs Create User */}
         <div className="px-5 bg-[#0E1628] border-b border-slate-800/80 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1 sm:gap-2">
             <button
@@ -723,7 +704,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </button>
         </div>
 
-        {/* Feedback notification banner */}
         {feedbackMsg && (
           <div className={`px-5 py-2.5 text-xs flex items-center justify-between border-b transition-all ${
             feedbackMsg.type === 'success'
@@ -747,12 +727,9 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </div>
         )}
 
-        {/* TAB 1: LIST USERS */}
         {activeTab === 'list' && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Search and Filters Bar */}
             <div className="p-4 bg-[#0B1120] border-b border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
-              {/* Search input */}
               <div className="relative w-full sm:w-72">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
@@ -773,7 +750,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                 )}
               </div>
 
-              {/* Filter Pills */}
               <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 custom-scrollbar">
                 <button
                   onClick={() => setFilterRole('all')}
@@ -835,7 +811,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
               </div>
             </div>
 
-            {/* Users List Scrollable View */}
             <div className="flex-1 overflow-y-auto p-4 space-y-2.5 custom-scrollbar">
               {loading && users.length === 0 ? (
                 <div className="py-12 flex flex-col items-center justify-center text-slate-400 gap-2">
@@ -863,9 +838,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   const isActionRunning = actionLoadingId === user.id;
                   const expInfo = getExpirationInfo(user.expirationDate);
 
-                  // Permissões de controle:
-                  // AdminMaster pode gerenciar todos (exceto excluir a si mesmo).
-                  // AdminRevenda SÓ pode gerenciar UsuarioComum.
                   const canEdit = isMaster || (isRevenda && (role === 'UsuarioComum' || isMe));
                   const canDelete = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
                   const canBlock = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
@@ -887,7 +859,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                           : 'bg-[#121A30] border-slate-800/80 hover:border-slate-700'
                       }`}
                     >
-                      {/* Left: Avatar & User Info */}
                       <div className="flex items-center gap-3 min-w-0 flex-1">
                         <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border ${
                           user.isBlocked
@@ -916,7 +887,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                               @{user.username}
                             </span>
 
-                            {/* Cargo Badges */}
                             {role === 'AdminMaster' && (
                               <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
                                 <Crown className="w-2.5 h-2.5" />
@@ -938,7 +908,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                               </span>
                             )}
 
-                            {/* Vencimento Badge */}
                             {expInfo.status === 'vitalicio' ? (
                               <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
                                 <Sparkles className="w-2.5 h-2.5" />
@@ -961,7 +930,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                               </span>
                             )}
 
-                            {/* Blocked Badge */}
                             {user.isBlocked && (
                               <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center gap-1">
                                 <Lock className="w-2.5 h-2.5" />
@@ -986,7 +954,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                             )}
                           </div>
 
-                          {/* Secondary info: Creator & Email & Date */}
                           <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-1 flex-wrap">
                             {user.email && <span>{user.email}</span>}
                             {user.createdBy && (
@@ -1004,9 +971,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                         </div>
                       </div>
 
-                      {/* Right: Actions */}
                       <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-                        {/* Quick Renew +30d Button */}
                         {canRenew && (
                           <button
                             id={`quick-renew-${user.id}`}
@@ -1020,7 +985,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                           </button>
                         )}
 
-                        {/* Edit Button */}
                         {canEdit ? (
                           <button
                             id={`edit-user-${user.id}`}
@@ -1037,7 +1001,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                           </span>
                         )}
 
-                        {/* Block/Unblock Button */}
                         {canBlock && (
                           <button
                             id={`toggle-block-${user.id}`}
@@ -1060,7 +1023,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                           </button>
                         )}
 
-                        {/* Delete Button */}
                         {canDelete && (
                           <button
                             id={`delete-user-${user.id}`}
@@ -1069,7 +1031,11 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                             className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80 hover:border-rose-500/40 transition cursor-pointer"
                             title={role === 'AdminRevenda' ? 'Excluir Revendedor (Apenas Master)' : 'Excluir conta definitivamente'}
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            {isActionRunning ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-3.5 h-3.5" />
+                            )}
                           </button>
                         )}
                       </div>
@@ -1081,7 +1047,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </div>
         )}
 
-        {/* TAB 2: CREATE USER FORM */}
         {activeTab === 'create' && (
           <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
             <div className="max-w-2xl mx-auto space-y-4">
@@ -1098,7 +1063,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
               </div>
 
               <form onSubmit={handleCreateUserSubmit} className="space-y-4">
-                {/* Nome Completo e Nome de Login */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -1134,7 +1098,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 </div>
 
-                {/* Email e Senha */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -1186,7 +1149,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 </div>
 
-                {/* Data de Vencimento do Cliente */}
                 <div className="p-3.5 rounded-xl bg-slate-900/70 border border-slate-700/70 space-y-2.5">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-semibold text-emerald-300 flex items-center gap-1.5">
@@ -1207,7 +1169,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                       className="bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                     />
 
-                    {/* Botões rápidos de acréscimo de dias */}
                     <div className="flex items-center gap-1 flex-wrap">
                       <button
                         type="button"
@@ -1251,7 +1212,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </p>
                 </div>
 
-                {/* Seleção de Cargo (Hierarquia de Permissões) */}
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                     Nível de Acesso (Cargo no Sistema)
@@ -1269,7 +1229,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                      {/* Opção: UsuarioComum */}
                       <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
                         formRole === 'UsuarioComum'
                           ? 'bg-slate-700/40 border-emerald-500/80 ring-1 ring-emerald-500/40 text-white'
@@ -1293,7 +1252,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                         </div>
                       </label>
 
-                      {/* Opção: AdminRevenda */}
                       <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
                         formRole === 'AdminRevenda'
                           ? 'bg-blue-600/15 border-blue-500/80 ring-1 ring-blue-500/40 text-white'
@@ -1317,7 +1275,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                         </div>
                       </label>
 
-                      {/* Opção: AdminMaster */}
                       <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
                         formRole === 'AdminMaster'
                           ? 'bg-amber-600/15 border-amber-500/80 ring-1 ring-amber-500/40 text-white'
@@ -1344,7 +1301,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   )}
                 </div>
 
-                {/* Vincular Lista M3U Opcional */}
                 <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-700/60 space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">
@@ -1377,7 +1333,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 </div>
 
-                {/* Submit button */}
                 <button
                   id="admin-submit-create-user"
                   type="submit"
@@ -1395,7 +1350,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                 </button>
               </form>
 
-              {/* Created User Credentials Box */}
               {lastCreatedUser && (
                 <div className="p-4 rounded-xl bg-slate-900 border border-emerald-500/40 space-y-2.5 animate-in fade-in duration-200">
                   <div className="flex items-center justify-between">
@@ -1455,7 +1409,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </div>
         )}
 
-        {/* Modal Footer */}
         <div className="px-5 py-3 bg-[#111A2E] border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
           <p className="text-[11px]">
             {isMaster 
@@ -1470,7 +1423,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </button>
         </div>
 
-        {/* SUB-MODAL: EDITAR USUÁRIO */}
         {editingUser && (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3">
             <div className="w-full max-w-lg bg-[#0F172A] border border-blue-500/40 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
@@ -1494,7 +1446,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
               </div>
 
               <form onSubmit={handleSaveEdit} className="p-5 space-y-3.5 max-h-[80vh] overflow-y-auto custom-scrollbar">
-                {/* Nome Completo e Username */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -1528,7 +1479,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 </div>
 
-                {/* E-mail */}
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">
                     E-mail <span className="text-slate-500 font-normal">(opcional)</span>
@@ -1543,7 +1493,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   />
                 </div>
 
-                {/* DATA DE VENCIMENTO DO CLIENTE (Requisito Chave do Usuário) */}
                 <div className="p-3.5 rounded-xl bg-slate-900/80 border border-emerald-500/40 space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
@@ -1564,7 +1513,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                       className="bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                     />
 
-                    {/* Botões rápidos de extensão */}
                     <div className="flex items-center gap-1 flex-wrap">
                       <button
                         type="button"
@@ -1610,7 +1558,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 </div>
 
-                {/* Cargo (apenas AdminMaster pode alterar cargos) */}
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                     Cargo / Nível de Acesso
@@ -1665,7 +1612,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   )}
                 </div>
 
-                {/* Nova Senha */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-xs font-semibold text-slate-300">
@@ -1700,7 +1646,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 </div>
 
-                {/* Lista M3U Salva do Usuário */}
                 <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-700/60 space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">
@@ -1744,7 +1689,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 </div>
 
-                {/* Status da Conta (Bloqueado / Ativo) */}
                 {editingUser.id !== currentAdmin.id && (
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -1770,7 +1714,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 )}
 
-                {/* Footer Buttons */}
                 <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-800">
                   <button
                     type="button"
@@ -1794,46 +1737,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </button>
                 </div>
               </form>
-            </div>
-          </div>
-        )}
-
-        {/* SUB-MODAL: CONFIRMAR EXCLUSÃO DEFINITIVA */}
-        {userToDelete && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="w-full max-w-md bg-[#0F172A] border border-rose-500/40 rounded-2xl shadow-2xl p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150">
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-xl bg-rose-600/20 border border-rose-500/40 text-rose-400 flex items-center justify-center shrink-0">
-                  <Trash2 className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-white">Excluir Conta Permanentemente?</h4>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Você está prestes a excluir a conta de <span className="text-white font-semibold">@{userToDelete.username}</span> ({userToDelete.name}).
-                    Cargo: <span className="text-blue-300 font-bold">{normalizeUserRole(userToDelete.role)}</span>.
-                    Todas as sessões ativas serão canceladas e o acesso será revogado.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800/80">
-                <button
-                  type="button"
-                  onClick={() => setUserToDelete(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-medium transition cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  id="confirm-delete-user-btn"
-                  type="button"
-                  onClick={handleConfirmDelete}
-                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs text-white font-bold flex items-center gap-1.5 transition cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Sim, Excluir Conta</span>
-                </button>
-              </div>
             </div>
           </div>
         )}
