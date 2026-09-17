@@ -52,6 +52,10 @@ export default function App() {
     return norm === 'AdminMaster' || norm === 'AdminRevenda';
   };
 
+  const isClienteComum = (role?: string) => {
+    return normalizeUserRole(role) === 'UsuarioComum';
+  };
+
   const [viewMode, setViewMode] = useState<ViewMode>('player');
   const [channels, setChannels] = useState<Channel[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
@@ -90,6 +94,13 @@ export default function App() {
         setIsVerifyingAuth(false);
       });
   }, []);
+
+  useEffect(() => {
+    if (currentUser && isClienteComum(currentUser.role)) {
+      setAppViewMode('client');
+      localStorage.setItem('iptv_app_view_mode', 'client');
+    }
+  }, [currentUser?.id, currentUser?.role]);
 
   const getSavedFavoriteIds = (userId?: string): string[] => {
     try {
@@ -258,7 +269,10 @@ export default function App() {
     return <AuthScreen onAuthSuccess={(user) => setCurrentUser(user)} />;
   }
 
-  if (appViewMode === 'client') {
+  const userIsCliente = isClienteComum(currentUser.role);
+  const userIsAdmin = isMasterOrRevenda(currentUser.role);
+
+  if (appViewMode === 'client' || userIsCliente) {
     return (
       <ClientPortalView
         channels={channels}
@@ -267,11 +281,11 @@ export default function App() {
         onLogout={handleLogout}
         onOpenImporter={() => setIsImporterOpen(true)}
         onToggleFavorite={handleToggleFavorite}
-        isAdminPreview={true}
-        onSwitchToAdmin={() => {
+        isAdminPreview={userIsAdmin}
+        onSwitchToAdmin={userIsAdmin ? () => {
           setAppViewMode('studio');
           localStorage.setItem('iptv_app_view_mode', 'studio');
-        }}
+        } : undefined}
       />
     );
   }
@@ -299,47 +313,49 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center bg-slate-900/90 p-1 rounded-xl border border-slate-800 text-xs shrink-0">
-            <button
-              id="tab-player-btn"
-              onClick={() => setViewMode('player')}
-              className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'player'
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-semibold'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Play className="w-3.5 h-3.5 fill-current" />
-              <span>Player</span>
-            </button>
+          {userIsAdmin && (
+            <div className="flex items-center bg-slate-900/90 p-1 rounded-xl border border-slate-800 text-xs shrink-0">
+              <button
+                id="tab-player-btn"
+                onClick={() => setViewMode('player')}
+                className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg font-medium transition ${
+                  viewMode === 'player'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>Player</span>
+              </button>
 
-            <button
-              id="tab-code-btn"
-              onClick={() => setViewMode('code')}
-              className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'code'
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-semibold'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Code2 className="w-3.5 h-3.5" />
-              <span>Códigos</span>
-            </button>
+              <button
+                id="tab-code-btn"
+                onClick={() => setViewMode('code')}
+                className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg font-medium transition ${
+                  viewMode === 'code'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Code2 className="w-3.5 h-3.5" />
+                <span>Códigos</span>
+              </button>
 
-            <button
-              id="tab-architecture-btn"
-              onClick={() => setViewMode('architecture')}
-              className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'architecture'
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-semibold'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Arquitetura</span>
-              <span className="sm:hidden">Guia</span>
-            </button>
-          </div>
+              <button
+                id="tab-architecture-btn"
+                onClick={() => setViewMode('architecture')}
+                className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg font-medium transition ${
+                  viewMode === 'architecture'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Arquitetura</span>
+                <span className="sm:hidden">Guia</span>
+              </button>
+            </div>
+          )}
 
           <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap ml-auto">
             <button
@@ -361,7 +377,7 @@ export default function App() {
               </span>
             </button>
 
-            {isMasterOrRevenda(currentUser.role) && (
+            {userIsAdmin && (
               <button
                 id="header-admin-users-btn"
                 onClick={() => setIsAdminModalOpen(true)}
@@ -384,29 +400,33 @@ export default function App() {
               </button>
             )}
 
-            <button
-              id="header-client-preview-btn"
-              onClick={() => {
-                setAppViewMode('client');
-                localStorage.setItem('iptv_app_view_mode', 'client');
-              }}
-              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition shadow-sm border bg-red-600/20 hover:bg-red-600/30 text-red-300 border-red-500/40 cursor-pointer active:scale-95"
-              title="Visualizar o template exatamente como o cliente final vê após o login"
-            >
-              <Smartphone className="w-3.5 h-3.5 text-red-400" />
-              <span className="hidden sm:inline">Ver App do Cliente</span>
-              <span className="sm:hidden">App Cliente</span>
-            </button>
+            {userIsAdmin && (
+              <button
+                id="header-client-preview-btn"
+                onClick={() => {
+                  setAppViewMode('client');
+                  localStorage.setItem('iptv_app_view_mode', 'client');
+                }}
+                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition shadow-sm border bg-red-600/20 hover:bg-red-600/30 text-red-300 border-red-500/40 cursor-pointer active:scale-95"
+                title="Visualizar o template exatamente como o cliente final vê após o login"
+              >
+                <Smartphone className="w-3.5 h-3.5 text-red-400" />
+                <span className="hidden sm:inline">Ver App do Cliente</span>
+                <span className="sm:hidden">App Cliente</span>
+              </button>
+            )}
 
-            <button
-              id="download-all-code-btn"
-              onClick={handleDownloadAllCode}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
-              title="Baixar todas as classes Java e XML compiladas"
-            >
-              <FolderDown className="w-3.5 h-3.5 text-blue-400" />
-              <span>Exportar Java</span>
-            </button>
+            {userIsAdmin && (
+              <button
+                id="download-all-code-btn"
+                onClick={handleDownloadAllCode}
+                className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
+                title="Baixar todas as classes Java e XML compiladas"
+              >
+                <FolderDown className="w-3.5 h-3.5 text-blue-400" />
+                <span>Exportar Java</span>
+              </button>
+            )}
 
             <div className="flex items-center gap-2 pl-2 border-l border-slate-800">
               <div className="hidden sm:flex flex-col text-right">
@@ -428,12 +448,12 @@ export default function App() {
               </div>
               <div
                 onClick={() => {
-                  if (isMasterOrRevenda(currentUser.role)) {
+                  if (userIsAdmin) {
                     setIsAdminModalOpen(true);
                   }
                 }}
                 className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs border ${
-                  isMasterOrRevenda(currentUser.role) ? 'cursor-pointer hover:ring-2 hover:ring-blue-400/50' : ''
+                  userIsAdmin ? 'cursor-pointer hover:ring-2 hover:ring-blue-400/50' : ''
                 } ${
                   normalizeUserRole(currentUser.role) === 'AdminMaster'
                     ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
@@ -441,7 +461,7 @@ export default function App() {
                     ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
                     : 'bg-slate-800 border-slate-700 text-slate-200'
                 }`}
-                title={isMasterOrRevenda(currentUser.role) ? 'Clique para abrir o painel' : undefined}
+                title={userIsAdmin ? 'Clique para abrir o painel' : undefined}
               >
                 {currentUser.name.charAt(0).toUpperCase()}
               </div>
@@ -549,4 +569,4 @@ export default function App() {
       )}
     </div>
   );
-}
+          }
