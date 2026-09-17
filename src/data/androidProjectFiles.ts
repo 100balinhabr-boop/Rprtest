@@ -128,11 +128,13 @@ dependencies {
         android:usesCleartextTraffic="true"
         tools:targetApi="34">
 
-        <!-- Tela Principal de Canais e Categorias -->
+        <!-- Tela Principal de Canais com Player Integrado e Suporte a Picture-in-Picture (PiP) -->
         <activity
             android:name=".presentation.ui.MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
             android:windowSoftInputMode="adjustPan">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -796,18 +798,25 @@ public class ChannelAdapter extends ListAdapter<Channel, ChannelAdapter.ChannelV
     path: 'app/src/main/java/com/iptv/player/presentation/ui/PlayerActivity.java',
     category: 'ui',
     language: 'java',
-    description: 'Player de vídeo completo com AndroidX Media3 (ExoPlayer), buffer inteligente, controle D-Pad e proporção de tela.',
+    description: 'Player de vídeo completo com AndroidX Media3 (ExoPlayer), buffer inteligente, suporte PiP, controle D-Pad e proporção de tela.',
     content: `package com.iptv.player.presentation.ui;
 
+import android.app.PictureInPictureParams;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.graphics.Rect;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.util.Rational;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.annotation.NonNull;
 import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.C;
@@ -829,7 +838,7 @@ import com.iptv.player.data.model.Channel;
 /**
  * Activity responsável pela reprodução nativa de streams IPTV utilizando o AndroidX Media3 ExoPlayer.
  * Oferece suporte completo a fluxos ao vivo (Live HLS/M3U8), reconexão inteligente,
- * alternância de aspect ratio (16:9, Zoom, Fill) e comandos de controle remoto (D-Pad TV Box).
+ * modo Picture-in-Picture (PiP), alternância de aspect ratio (16:9, Zoom, Fill) e comandos D-Pad.
  */
 @UnstableApi
 public class PlayerActivity extends AppCompatActivity {
@@ -840,6 +849,7 @@ public class PlayerActivity extends AppCompatActivity {
     private ExoPlayer player;
     private ProgressBar progressBar;
     private TextView tvPlayerTitle;
+    private View topBarOverlay;
     private Channel currentChannel;
 
     private int currentResizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT;
@@ -869,6 +879,7 @@ public class PlayerActivity extends AppCompatActivity {
         playerView = findViewById(R.id.playerView);
         progressBar = findViewById(R.id.playerProgressBar);
         tvPlayerTitle = findViewById(R.id.tvPlayerTitle);
+        topBarOverlay = findViewById(R.id.topBarOverlay);
 
         tvPlayerTitle.setText(currentChannel.getName());
 
@@ -1011,9 +1022,57 @@ public class PlayerActivity extends AppCompatActivity {
                 | View.SYSTEM_UI_FLAG_FULLSCREEN);
     }
 
+    /**
+     * Acionado quando o usuário sai do app (Home button ou navegação por gestos).
+     * Minimiza o player automaticamente no modo Picture-in-Picture.
+     */
+    @Override
+    public void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (player != null && player.isPlaying()) {
+            enterPictureInPicture();
+        }
+    }
+
+    public void enterPictureInPicture() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+                PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder();
+                builder.setAspectRatio(new Rational(16, 9));
+                if (playerView != null) {
+                    Rect sourceRect = new Rect();
+                    playerView.getGlobalVisibleRect(sourceRect);
+                    builder.setSourceRectHint(sourceRect);
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    builder.setAutoEnterEnabled(player != null && player.isPlaying());
+                }
+                enterPictureInPictureMode(builder.build());
+            }
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, @NonNull Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        if (isInPictureInPictureMode) {
+            // Oculta overlays e controles para focar unicamente no vídeo
+            if (topBarOverlay != null) topBarOverlay.setVisibility(View.GONE);
+            if (playerView != null) playerView.setUseController(false);
+        } else {
+            // Restaura controles ao retornar ao app
+            if (topBarOverlay != null) topBarOverlay.setVisibility(View.VISIBLE);
+            if (playerView != null) playerView.setUseController(true);
+            hideSystemUI();
+        }
+    }
+
     @Override
     protected void onStop() {
         super.onStop();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode()) {
+            return;
+        }
         if (player != null) {
             player.pause();
         }
@@ -1034,24 +1093,50 @@ public class PlayerActivity extends AppCompatActivity {
     path: 'app/src/main/java/com/iptv/player/presentation/ui/MainActivity.java',
     category: 'ui',
     language: 'java',
-    description: 'Activity principal com suporte a busca em tempo real, abas de categorias e carregamento de listas.',
+    description: 'Activity principal com suporte a ExoPlayer integrado, Picture-in-Picture (PiP) nativo com controles flutuantes e busca.',
     content: `package com.iptv.player.presentation.ui;
 
+import android.app.PendingIntent;
+import android.app.PictureInPictureParams;
+import android.app.RemoteAction;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.graphics.Rect;
+import android.graphics.drawable.Icon;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.util.Rational;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.appcompat.app.AlertDialog;
+import androidx.annotation.NonNull;
+import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.lifecycle.ViewModelProvider;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.hls.HlsMediaSource;
+import androidx.media3.exoplayer.source.MediaSource;
+import androidx.media3.exoplayer.source.ProgressiveMediaSource;
+import androidx.media3.ui.PlayerView;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -1061,22 +1146,47 @@ import com.iptv.player.data.model.Channel;
 import com.iptv.player.presentation.adapter.ChannelAdapter;
 import com.iptv.player.presentation.adapter.GroupAdapter;
 import com.iptv.player.presentation.viewmodel.MainViewModel;
+import java.util.ArrayList;
 
 /**
- * Tela principal do IPTV Player.
- * Segue o padrão MVVM conectando o RecyclerView ao MainViewModel com LiveData.
+ * Tela principal do IPTV Player com suporte integrado ao AndroidX Media3 ExoPlayer
+ * e ao modo nativo Picture-in-Picture (PiP) do Android.
+ * 
+ * Permite que o usuário assista ao canal em mini-janela flutuante interativa enquanto
+ * utiliza outros aplicativos ou navega pelo sistema operacional Android.
  */
+@UnstableApi
 public class MainActivity extends AppCompatActivity implements ChannelAdapter.OnChannelClickListener {
+
+    public static final String ACTION_MEDIA_CONTROL = "com.iptv.player.ACTION_PIP_MEDIA_CONTROL";
+    public static final String EXTRA_CONTROL_TYPE = "control_type";
+    public static final int CONTROL_PLAY_PAUSE = 1;
 
     private MainViewModel viewModel;
     private ChannelAdapter channelAdapter;
     private GroupAdapter groupAdapter;
 
+    // Elementos da Interface Geral
+    private View topAppBar;
     private RecyclerView rvChannels;
     private RecyclerView rvCategories;
     private ProgressBar progressBar;
     private TextView tvStatus;
     private EditText etSearch;
+
+    // Componentes do Player Integrado e PiP
+    private View playerContainer;
+    private PlayerView playerView;
+    private ExoPlayer player;
+    private ProgressBar playerBufferingBar;
+    private TextView tvPlayerChannelTitle;
+    private View playerOverlayControls;
+    private ImageButton btnEnterPip;
+    private ImageButton btnClosePlayer;
+    private ImageButton btnFullscreen;
+
+    private Channel currentPlayingChannel;
+    private BroadcastReceiver pipBroadcastReceiver;
 
     // Seletor de arquivo local .m3u/.m3u8
     private final ActivityResultLauncher<String[]> filePickerLauncher =
@@ -1094,21 +1204,55 @@ public class MainActivity extends AppCompatActivity implements ChannelAdapter.On
         viewModel = new ViewModelProvider(this).get(MainViewModel.class);
 
         initViews();
+        setupEmbeddedExoPlayer();
         setupRecyclerViews();
         observeViewModel();
+        registerPipReceiver();
 
-        // Carrega uma lista padrão ou solicita inserção
+        // Diálogo inicial para carregar canais caso a lista esteja vazia
         showPlaylistChooserDialog();
     }
 
     private void initViews() {
+        topAppBar = findViewById(R.id.topAppBar);
         rvChannels = findViewById(R.id.rvChannels);
         rvCategories = findViewById(R.id.rvCategories);
         progressBar = findViewById(R.id.mainProgressBar);
         tvStatus = findViewById(R.id.tvStatus);
         etSearch = findViewById(R.id.etSearch);
 
+        // Container e controles do player integrado
+        playerContainer = findViewById(R.id.playerContainer);
+        playerView = findViewById(R.id.mainPlayerView);
+        playerBufferingBar = findViewById(R.id.mainPlayerProgressBar);
+        tvPlayerChannelTitle = findViewById(R.id.tvMainPlayerTitle);
+        playerOverlayControls = findViewById(R.id.playerOverlayControls);
+        btnEnterPip = findViewById(R.id.btnEnterPip);
+        btnClosePlayer = findViewById(R.id.btnClosePlayer);
+        btnFullscreen = findViewById(R.id.btnFullscreen);
+
         findViewById(R.id.btnLoadPlaylist).setOnClickListener(v -> showPlaylistChooserDialog());
+
+        // Botão para entrar no modo Picture-in-Picture sob demanda
+        if (btnEnterPip != null) {
+            btnEnterPip.setOnClickListener(v -> enterPictureInPicture());
+        }
+
+        // Botão para fechar o player integrado
+        if (btnClosePlayer != null) {
+            btnClosePlayer.setOnClickListener(v -> stopAndHidePlayer());
+        }
+
+        // Botão para expandir para tela cheia dedicada (PlayerActivity)
+        if (btnFullscreen != null) {
+            btnFullscreen.setOnClickListener(v -> {
+                if (currentPlayingChannel != null) {
+                    Intent intent = new Intent(this, PlayerActivity.class);
+                    intent.putExtra(PlayerActivity.EXTRA_CHANNEL, currentPlayingChannel);
+                    startActivity(intent);
+                }
+            });
+        }
 
         etSearch.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -1119,14 +1263,278 @@ public class MainActivity extends AppCompatActivity implements ChannelAdapter.On
         });
     }
 
+    /**
+     * Inicializa a instância do ExoPlayer acoplada ao PlayerView da MainActivity.
+     */
+    private void setupEmbeddedExoPlayer() {
+        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(1000, 5000, 500, 1000)
+                .build();
+
+        player = new ExoPlayer.Builder(this)
+                .setLoadControl(loadControl)
+                .build();
+
+        playerView.setPlayer(player);
+        playerView.setControllerShowTimeoutMs(3000);
+
+        player.addListener(new Player.Listener() {
+            @Override
+            public void onPlaybackStateChanged(int playbackState) {
+                if (playerBufferingBar != null) {
+                    playerBufferingBar.setVisibility(playbackState == Player.STATE_BUFFERING ? View.VISIBLE : View.GONE);
+                }
+                updatePictureInPictureParams();
+            }
+
+            @Override
+            public void onIsPlayingChanged(boolean isPlaying) {
+                // Atualiza a ação (Play/Pause) no painel PiP em tempo real
+                updatePictureInPictureParams();
+            }
+
+            @Override
+            public void onPlayerError(@NonNull PlaybackException error) {
+                if (playerBufferingBar != null) playerBufferingBar.setVisibility(View.GONE);
+                Toast.makeText(MainActivity.this, "Erro de Stream: " + error.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    /**
+     * Sintoniza e inicia a transmissão ao vivo do canal selecionado no ExoPlayer.
+     */
+    private void playChannel(Channel channel) {
+        if (channel == null || channel.getStreamUrl() == null || channel.getStreamUrl().isEmpty()) {
+            Toast.makeText(this, "Canal sem URL de stream válida.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        currentPlayingChannel = channel;
+
+        // Exibe o player na tela caso estivesse oculto
+        if (playerContainer != null) {
+            playerContainer.setVisibility(View.VISIBLE);
+        }
+        if (tvPlayerChannelTitle != null) {
+            tvPlayerChannelTitle.setText(channel.getName());
+        }
+
+        String userAgent = channel.getUserAgent() != null 
+                ? channel.getUserAgent() 
+                : "IPTVPlayer-PiP/1.0 (Android; ExoPlayer Media3)";
+
+        DefaultHttpDataSource.Factory httpDataSourceFactory = new DefaultHttpDataSource.Factory()
+                .setUserAgent(userAgent)
+                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(15000)
+                .setReadTimeoutMs(20000);
+
+        Uri uri = Uri.parse(channel.getStreamUrl());
+        MediaSource mediaSource;
+
+        if (channel.getStreamUrl().contains(".m3u8") || channel.getStreamUrl().contains("hls")) {
+            mediaSource = new HlsMediaSource.Factory(httpDataSourceFactory)
+                    .setAllowChunklessPreparation(true)
+                    .createMediaSource(MediaItem.fromUri(uri));
+        } else {
+            mediaSource = new ProgressiveMediaSource.Factory(httpDataSourceFactory)
+                    .createMediaSource(MediaItem.fromUri(uri));
+        }
+
+        player.setMediaSource(mediaSource);
+        player.prepare();
+        player.setPlayWhenReady(true);
+
+        // Prepara os parâmetros do Picture-in-Picture para permitir entrada imediata
+        updatePictureInPictureParams();
+    }
+
+    private void stopAndHidePlayer() {
+        if (player != null) {
+            player.stop();
+        }
+        currentPlayingChannel = null;
+        if (playerContainer != null) {
+            playerContainer.setVisibility(View.GONE);
+        }
+    }
+
+    /**
+     * Entra ativamente no modo Picture-in-Picture (Janela Flutuante).
+     */
+    public void enterPictureInPicture() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Toast.makeText(this, "Modo PiP requer Android 8.0 Oreo (API 26) ou superior.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+            Toast.makeText(this, "Este dispositivo não suporta o modo Picture-in-Picture.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (player == null || currentPlayingChannel == null) {
+            Toast.makeText(this, "Nenhum canal ativo para reprodução em PiP.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        PictureInPictureParams params = buildPictureInPictureParams();
+        if (params != null) {
+            enterPictureInPictureMode(params);
+        }
+    }
+
+    /**
+     * Constrói os parâmetros do PiP, incluindo a proporção 16:9, a delimitação de origem (Rect)
+     * e o botão interativo de Play/Pause na mini janela do sistema.
+     */
+    private PictureInPictureParams buildPictureInPictureParams() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return null;
+        }
+
+        PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder();
+
+        // Proporção de tela widescreen padrão (16:9)
+        Rational aspectRatio = new Rational(16, 9);
+        builder.setAspectRatio(aspectRatio);
+
+        // Define a caixa de origem para animação fluida do player em direção ao PiP
+        if (playerView != null) {
+            Rect sourceRectHint = new Rect();
+            playerView.getGlobalVisibleRect(sourceRectHint);
+            builder.setSourceRectHint(sourceRectHint);
+        }
+
+        // Ações interativas na janela PiP (Controle de Reprodução / Pausa)
+        ArrayList<RemoteAction> actions = new ArrayList<>();
+        boolean isPlaying = player != null && player.isPlaying();
+
+        Intent actionIntent = new Intent(ACTION_MEDIA_CONTROL)
+                .setPackage(getPackageName())
+                .putExtra(EXTRA_CONTROL_TYPE, CONTROL_PLAY_PAUSE);
+
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(this, 101, actionIntent, flags);
+
+        int iconRes = isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play;
+        String actionTitle = isPlaying ? "Pausar" : "Reproduzir";
+
+        RemoteAction playPauseAction = new RemoteAction(
+                Icon.createWithResource(this, iconRes),
+                actionTitle,
+                actionTitle,
+                pendingIntent
+        );
+        actions.add(playPauseAction);
+        builder.setActions(actions);
+
+        // No Android 12 (API 31+), permite entrar automaticamente no PiP ao deslizar para o Home
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(player != null && player.isPlaying());
+        }
+
+        return builder.build();
+    }
+
+    /**
+     * Atualiza os parâmetros do PiP (ex: alterar ícone entre Play e Pause).
+     */
+    private void updatePictureInPictureParams() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PictureInPictureParams params = buildPictureInPictureParams();
+            if (params != null) {
+                setPictureInPictureParams(params);
+            }
+        }
+    }
+
+    /**
+     * Acionado quando o usuário minimiza o app (botão Home ou gesto de saída).
+     * Entra automaticamente no modo PiP caso um canal esteja em reprodução.
+     */
+    @Override
+    public void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (player != null && player.isPlaying() && currentPlayingChannel != null) {
+            enterPictureInPicture();
+        }
+    }
+
+    /**
+     * Trata as transições visuais de entrada e saída do modo Picture-in-Picture.
+     * Oculta todas as listas, abas e barras para exibir apenas o vídeo no modo flutuante.
+     */
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, @NonNull Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+
+        if (isInPictureInPictureMode) {
+            // Em modo PiP: esconde controles, listas, pesquisa e cabeçalho para foco total no vídeo
+            if (topAppBar != null) topAppBar.setVisibility(View.GONE);
+            if (etSearch != null) etSearch.setVisibility(View.GONE);
+            if (rvCategories != null) rvCategories.setVisibility(View.GONE);
+            if (rvChannels != null) rvChannels.setVisibility(View.GONE);
+            if (tvStatus != null) tvStatus.setVisibility(View.GONE);
+            if (playerOverlayControls != null) playerOverlayControls.setVisibility(View.GONE);
+
+            if (playerView != null) {
+                playerView.setUseController(false);
+            }
+        } else {
+            // Saindo do PiP: restaura a interface completa da aplicação
+            if (topAppBar != null) topAppBar.setVisibility(View.VISIBLE);
+            if (etSearch != null) etSearch.setVisibility(View.VISIBLE);
+            if (rvCategories != null) rvCategories.setVisibility(View.VISIBLE);
+            if (rvChannels != null) rvChannels.setVisibility(View.VISIBLE);
+            if (tvStatus != null) tvStatus.setVisibility(View.VISIBLE);
+            if (playerOverlayControls != null) playerOverlayControls.setVisibility(View.VISIBLE);
+
+            if (playerView != null) {
+                playerView.setUseController(true);
+            }
+
+            updatePictureInPictureParams();
+        }
+    }
+
+    private void registerPipReceiver() {
+        pipBroadcastReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null || !ACTION_MEDIA_CONTROL.equals(intent.getAction())) return;
+
+                int controlType = intent.getIntExtra(EXTRA_CONTROL_TYPE, 0);
+                if (controlType == CONTROL_PLAY_PAUSE && player != null) {
+                    if (player.isPlaying()) {
+                        player.pause();
+                    } else {
+                        player.play();
+                    }
+                    updatePictureInPictureParams();
+                }
+            }
+        };
+
+        IntentFilter filter = new IntentFilter(ACTION_MEDIA_CONTROL);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.registerReceiver(this, pipBroadcastReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(pipBroadcastReceiver, filter);
+        }
+    }
+
     private void setupRecyclerViews() {
-        // Grid responsivo: 3 a 5 colunas dependendo se é celular ou TV Box grande
         int spanCount = getResources().getInteger(R.integer.channel_grid_span_count);
         rvChannels.setLayoutManager(new GridLayoutManager(this, spanCount));
         channelAdapter = new ChannelAdapter(this);
         rvChannels.setAdapter(channelAdapter);
 
-        // Lista horizontal de categorias
         rvCategories.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
         groupAdapter = new GroupAdapter(category -> viewModel.selectCategory(category));
         rvCategories.setAdapter(groupAdapter);
@@ -1193,14 +1601,39 @@ public class MainActivity extends AppCompatActivity implements ChannelAdapter.On
 
     @Override
     public void onChannelClick(Channel channel, int position) {
-        Intent intent = new Intent(this, PlayerActivity.class);
-        intent.putExtra(PlayerActivity.EXTRA_CHANNEL, channel);
-        startActivity(intent);
+        // Ao clicar no canal, inicia no player integrado com suporte a Picture-in-Picture
+        playChannel(channel);
     }
 
     @Override
     public void onChannelFavoriteToggle(Channel channel, int position) {
         viewModel.toggleFavorite(channel);
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        // Não pausa a reprodução se o usuário estiver ativamente assistindo em modo PiP
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode()) {
+            return;
+        }
+        if (player != null && player.isPlaying()) {
+            player.pause();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (pipBroadcastReceiver != null) {
+            try {
+                unregisterReceiver(pipBroadcastReceiver);
+            } catch (Exception ignored) {}
+        }
+        if (player != null) {
+            player.release();
+            player = null;
+        }
     }
 }`
   },
@@ -1472,5 +1905,217 @@ public class GroupAdapter extends RecyclerView.Adapter<GroupAdapter.GroupViewHol
     <!-- Estado padrão em repouso -->
     <item android:color="#2A3342" />
 </selector>`
+  },
+  {
+    name: 'activity_main.xml',
+    path: 'app/src/main/res/layout/activity_main.xml',
+    category: 'layout',
+    language: 'xml',
+    description: 'Layout da MainActivity com player ExoPlayer integrado, suporte a PiP, busca e categorias.',
+    content: `<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0B0F17">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- Top App Bar / Cabeçalho com Importação de Playlist -->
+        <com.google.android.material.appbar.AppBarLayout
+            android:id="@+id/topAppBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#131C31"
+            app:elevation="4dp">
+
+            <androidx.appcompat.widget.Toolbar
+                android:layout_width="match_parent"
+                android:layout_height="?attr/actionBarSize"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="IPTV Player Pro"
+                    android:textColor="#FFFFFF"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnLoadPlaylist"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
+                    android:text="Importar M3U"
+                    android:textColor="#38BDF8"
+                    app:strokeColor="#0284C7" />
+
+            </androidx.appcompat.widget.Toolbar>
+
+        </com.google.android.material.appbar.AppBarLayout>
+
+        <!-- Container do Player ExoPlayer com Suporte a Picture-in-Picture (PiP) -->
+        <FrameLayout
+            android:id="@+id/playerContainer"
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:background="#000000"
+            android:visibility="gone"
+            tools:visibility="visible">
+
+            <androidx.media3.ui.PlayerView
+                android:id="@+id/mainPlayerView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                app:resize_mode="fit"
+                app:show_buffering="when_playing"
+                app:use_controller="true" />
+
+            <!-- Indicador de Buffering -->
+            <ProgressBar
+                android:id="@+id/mainPlayerProgressBar"
+                style="?android:attr/progressBarStyleLarge"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="center"
+                android:indeterminateTint="#38BDF8"
+                android:visibility="gone" />
+
+            <!-- Controles do Player com Botão de PiP, Tela Cheia e Fechar -->
+            <LinearLayout
+                android:id="@+id/playerOverlayControls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top"
+                android:background="#80000000"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="8dp">
+
+                <TextView
+                    android:id="@+id/tvMainPlayerTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textColor="#FFFFFF"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    tools:text="Canal Ao Vivo HD" />
+
+                <!-- Botão Ativar Modo Picture-in-Picture (PiP) -->
+                <ImageButton
+                    android:id="@+id/btnEnterPip"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Minimizar em Picture-in-Picture"
+                    android:src="@drawable/ic_picture_in_picture"
+                    app:tint="#38BDF8" />
+
+                <!-- Botão Tela Cheia (PlayerActivity) -->
+                <ImageButton
+                    android:id="@+id/btnFullscreen"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Tela Cheia"
+                    android:src="@drawable/ic_fullscreen"
+                    app:tint="#FFFFFF" />
+
+                <!-- Botão Fechar Player -->
+                <ImageButton
+                    android:id="@+id/btnClosePlayer"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Fechar Player"
+                    android:src="@drawable/ic_close"
+                    app:tint="#EF4444" />
+
+            </LinearLayout>
+
+        </FrameLayout>
+
+        <!-- Campo de Pesquisa Instantânea -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_margin="12dp"
+            app:boxBackgroundColor="#1A2234"
+            app:boxCornerRadiusBottomEnd="12dp"
+            app:boxCornerRadiusBottomStart="12dp"
+            app:boxCornerRadiusTopEnd="12dp"
+            app:boxCornerRadiusTopStart="12dp"
+            app:boxStrokeColor="#38BDF8"
+            app:hintTextColor="#94A3B8"
+            app:startIconDrawable="@android:drawable/ic_menu_search"
+            app:startIconTint="#94A3B8">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etSearch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Buscar canais por nome..."
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#64748B" />
+
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- Lista Horizontal de Categorias -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvCategories"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp" />
+
+        <!-- Status e Quantidade de Canais -->
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="4dp"
+            android:textColor="#94A3B8"
+            android:textSize="12sp"
+            tools:text="142 canais disponíveis" />
+
+        <!-- Barra de Progresso Principal -->
+        <ProgressBar
+            android:id="@+id/mainProgressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:indeterminate="true"
+            android:indeterminateTint="#38BDF8"
+            android:visibility="gone" />
+
+        <!-- Grid Responsivo de Canais -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvChannels"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:padding="8dp" />
+
+    </LinearLayout>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>`
   }
 ];

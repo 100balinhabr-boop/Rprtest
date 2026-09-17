@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { UserAccount } from '../types';
+import { UserAccount, UserRole } from '../types';
 import { 
   Users, 
   X, 
@@ -25,7 +25,14 @@ import {
   Copy,
   Check,
   Mail,
-  Pencil
+  Pencil,
+  Tv,
+  Globe,
+  Clock,
+  Crown,
+  Briefcase,
+  CalendarPlus,
+  AlertTriangle
 } from 'lucide-react';
 
 interface AdminUsersModalProps {
@@ -34,12 +41,47 @@ interface AdminUsersModalProps {
   currentAdmin: UserAccount;
 }
 
+export const normalizeUserRole = (r?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' => {
+  if (!r) return 'UsuarioComum';
+  const lower = r.toLowerCase();
+  if (lower === 'adminmaster' || lower === 'master' || lower === 'admin') return 'AdminMaster';
+  if (lower === 'adminrevenda' || lower === 'revenda') return 'AdminRevenda';
+  return 'UsuarioComum';
+};
+
+export const formatDateDisplay = (dateStr?: string | null): string => {
+  if (!dateStr) return 'Vitalício';
+  const parts = dateStr.slice(0, 10).split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return dateStr;
+};
+
+export const getExpirationInfo = (expirationDate?: string | null) => {
+  if (!expirationDate || expirationDate === 'vitalicio') {
+    return { status: 'vitalicio' as const, label: 'Vitalício', isExpired: false, daysLeft: Infinity };
+  }
+  const exp = new Date(`${expirationDate.slice(0, 10)}T23:59:59`);
+  const now = new Date();
+  const diffMs = exp.getTime() - now.getTime();
+  const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  if (daysLeft < 0) {
+    return { status: 'expired' as const, label: `Vencido (${formatDateDisplay(expirationDate)})`, isExpired: true, daysLeft };
+  }
+  if (daysLeft <= 5) {
+    return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft };
+  }
+  return { status: 'active' as const, label: `Válido até ${formatDateDisplay(expirationDate)}`, isExpired: false, daysLeft };
+};
+
 export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   isOpen,
   onClose,
   currentAdmin,
 }) => {
   const [activeTab, setActiveTab] = useState<'list' | 'create'>('list');
+  const [filterRole, setFilterRole] = useState<'all' | 'UsuarioComum' | 'AdminRevenda' | 'AdminMaster' | 'expired'>('all');
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -48,15 +90,26 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [allowRegistration, setAllowRegistration] = useState<boolean>(true);
   const [settingLoading, setSettingLoading] = useState<boolean>(false);
 
+  const currentAdminRole = normalizeUserRole(currentAdmin.role);
+  const isMaster = currentAdminRole === 'AdminMaster';
+  const isRevenda = currentAdminRole === 'AdminRevenda';
+
   // Form states for Create User
   const [formName, setFormName] = useState<string>('');
   const [formUsername, setFormUsername] = useState<string>('');
   const [formEmail, setFormEmail] = useState<string>('');
   const [formPassword, setFormPassword] = useState<string>('');
-  const [formRole, setFormRole] = useState<'user' | 'admin'>('user');
+  const [formRole, setFormRole] = useState<'UsuarioComum' | 'AdminRevenda' | 'AdminMaster'>('UsuarioComum');
+  const [formExpirationDate, setFormExpirationDate] = useState<string>(() => {
+    // Padrão: 30 dias a partir de hoje
+    const d = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    return d.toISOString().split('T')[0];
+  });
+  const [formPlaylistUrl, setFormPlaylistUrl] = useState<string>('');
+  const [formPlaylistName, setFormPlaylistName] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [isSubmittingNewUser, setIsSubmittingNewUser] = useState<boolean>(false);
-  const [lastCreatedUser, setLastCreatedUser] = useState<{ username: string; password: string; name: string } | null>(null);
+  const [lastCreatedUser, setLastCreatedUser] = useState<{ username: string; password: string; name: string; role: string; expirationDate: string | null } | null>(null);
   const [copiedCredentials, setCopiedCredentials] = useState<boolean>(false);
 
   // States for Edit User
@@ -64,14 +117,22 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [editName, setEditName] = useState<string>('');
   const [editUsername, setEditUsername] = useState<string>('');
   const [editEmail, setEditEmail] = useState<string>('');
-  const [editRole, setEditRole] = useState<'user' | 'admin'>('user');
+  const [editRole, setEditRole] = useState<'UsuarioComum' | 'AdminRevenda' | 'AdminMaster'>('UsuarioComum');
+  const [editExpirationDate, setEditExpirationDate] = useState<string>('');
   const [editPassword, setEditPassword] = useState<string>('');
+  const [editPlaylistUrl, setEditPlaylistUrl] = useState<string>('');
+  const [editPlaylistName, setEditPlaylistName] = useState<string>('');
   const [editShowPassword, setEditShowPassword] = useState<boolean>(false);
   const [editIsBlocked, setEditIsBlocked] = useState<boolean>(false);
   const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
 
   // State for in-app delete confirmation modal
   const [userToDelete, setUserToDelete] = useState<UserAccount | null>(null);
+
+  // State for quick renew modal/popover
+  const [renewingUser, setRenewingUser] = useState<UserAccount | null>(null);
+  const [renewCustomDate, setRenewCustomDate] = useState<string>('');
+  const [isRenewing, setIsRenewing] = useState<boolean>(false);
 
   const getAuthToken = () => {
     return localStorage.getItem('iptv_auth_token') || sessionStorage.getItem('iptv_auth_token') || '';
@@ -117,6 +178,24 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     setShowPassword(true);
   };
 
+  const handleSetFormExpirationDays = (days: number) => {
+    const d = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    setFormExpirationDate(d.toISOString().split('T')[0]);
+  };
+
+  const handleSetEditExpirationDays = (days: number) => {
+    // Se a data do usuário ainda for válida no futuro, acrescenta dias a partir dela
+    let baseTime = Date.now();
+    if (editExpirationDate) {
+      const existing = new Date(`${editExpirationDate.slice(0, 10)}T23:59:59`).getTime();
+      if (!isNaN(existing) && existing > Date.now()) {
+        baseTime = existing;
+      }
+    }
+    const d = new Date(baseTime + days * 24 * 60 * 60 * 1000);
+    setEditExpirationDate(d.toISOString().split('T')[0]);
+  };
+
   const handleCreateUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedbackMsg(null);
@@ -130,6 +209,9 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
       setFeedbackMsg({ type: 'error', text: 'A senha deve ter no mínimo 4 caracteres.' });
       return;
     }
+
+    // Se o operador for AdminRevenda, trava o cargo em UsuarioComum
+    const assignedRole = isRevenda ? 'UsuarioComum' : formRole;
 
     setIsSubmittingNewUser(true);
 
@@ -146,7 +228,10 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           username: cleanUsername,
           email: formEmail.trim() || undefined,
           password: formPassword,
-          role: formRole,
+          role: assignedRole,
+          expirationDate: formExpirationDate ? formExpirationDate : null,
+          playlistUrl: formPlaylistUrl.trim() || undefined,
+          playlistName: formPlaylistName.trim() || undefined,
         }),
       });
 
@@ -158,18 +243,24 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           username: cleanUsername,
           password: formPassword,
           name: formName.trim() || cleanUsername,
+          role: assignedRole,
+          expirationDate: formExpirationDate || null,
         });
         setFeedbackMsg({
           type: 'success',
-          text: `Usuário @${cleanUsername} cadastrado com sucesso! As credenciais estão prontas para envio.`,
+          text: `Usuário @${cleanUsername} (${assignedRole}) cadastrado com sucesso!`,
         });
 
-        // Reset form inputs
+        // Reset form
         setFormName('');
         setFormUsername('');
         setFormEmail('');
         setFormPassword('');
-        setFormRole('user');
+        setFormRole('UsuarioComum');
+        const defaultNextMonth = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        setFormExpirationDate(defaultNextMonth);
+        setFormPlaylistUrl('');
+        setFormPlaylistName('');
       } else {
         setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao cadastrar novo usuário.' });
       }
@@ -182,15 +273,30 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
 
   const handleCopyLastCreated = () => {
     if (!lastCreatedUser) return;
-    const textToCopy = `Acesso IPTV Player:\nUsuário: ${lastCreatedUser.username}\nSenha: ${lastCreatedUser.password}`;
+    const expText = lastCreatedUser.expirationDate 
+      ? formatDateDisplay(lastCreatedUser.expirationDate)
+      : 'Vitalício / Sem Vencimento';
+    const textToCopy = `🔐 *Acesso IPTV Player*\n👤 Usuário: ${lastCreatedUser.username}\n🔑 Senha: ${lastCreatedUser.password}\n📅 Vencimento: ${expText}\nCargo: ${lastCreatedUser.role}`;
     navigator.clipboard.writeText(textToCopy);
     setCopiedCredentials(true);
     setTimeout(() => setCopiedCredentials(false), 2500);
   };
 
   const handleToggleBlock = async (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
+
     if (user.id === currentAdmin.id) {
       setFeedbackMsg({ type: 'error', text: 'Você não pode bloquear a sua própria conta.' });
+      return;
+    }
+
+    if (targetRole === 'AdminMaster') {
+      setFeedbackMsg({ type: 'error', text: 'Não é permitido bloquear a conta do AdminMaster.' });
+      return;
+    }
+
+    if (isRevenda && targetRole !== 'UsuarioComum') {
+      setFeedbackMsg({ type: 'error', text: 'AdminRevenda só tem permissão para gerenciar Usuários Comuns.' });
       return;
     }
 
@@ -223,13 +329,23 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   };
 
   const handleOpenEdit = (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
+
+    if (isRevenda && targetRole !== 'UsuarioComum' && user.id !== currentAdmin.id) {
+      setFeedbackMsg({ type: 'error', text: 'AdminRevenda não pode alterar contas de outros revendedores ou administradores.' });
+      return;
+    }
+
     setEditingUser(user);
     setEditName(user.name || '');
     setEditUsername(user.username || '');
     setEditEmail(user.email || '');
-    setEditRole(user.role);
+    setEditRole(targetRole);
+    setEditExpirationDate(user.expirationDate ? user.expirationDate.slice(0, 10) : '');
     setEditIsBlocked(!!user.isBlocked);
     setEditPassword('');
+    setEditPlaylistUrl(user.playlistUrl || '');
+    setEditPlaylistName(user.playlistName || '');
     setEditShowPassword(false);
     setFeedbackMsg(null);
   };
@@ -274,9 +390,12 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           name: editName.trim(),
           username: cleanUsername,
           email: editEmail.trim() || undefined,
-          role: editRole,
+          role: isMaster ? editRole : undefined,
+          expirationDate: editExpirationDate ? editExpirationDate : 'vitalicio',
           password: editPassword.trim() || undefined,
           isBlocked: editIsBlocked,
+          playlistUrl: editPlaylistUrl.trim() || undefined,
+          playlistName: editPlaylistName.trim() || undefined,
         }),
       });
 
@@ -296,10 +415,29 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   };
 
   const handleDeleteUser = (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
+
     if (user.id === currentAdmin.id) {
-      setFeedbackMsg({ type: 'error', text: 'Você não pode excluir sua própria conta de administrador.' });
+      setFeedbackMsg({ type: 'error', text: 'Você não pode excluir sua própria conta.' });
       return;
     }
+
+    if (targetRole === 'AdminMaster') {
+      setFeedbackMsg({ type: 'error', text: 'Não é permitido excluir o AdminMaster principal.' });
+      return;
+    }
+
+    // Regra explícita do usuário:
+    // "AdmimMaster ( e a principal conta que pode remover admin Revenda e adicionar )"
+    // "AdminRevenda ( só pode adicionar usuário comun )"
+    if (isRevenda && targetRole !== 'UsuarioComum') {
+      setFeedbackMsg({ 
+        type: 'error', 
+        text: 'AdminRevenda não tem permissão para remover revendedores ou administradores. Apenas o AdminMaster pode remover contas de revenda.' 
+      });
+      return;
+    }
+
     setUserToDelete(user);
   };
 
@@ -329,6 +467,43 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
       setFeedbackMsg({ type: 'error', text: 'Falha ao tentar excluir usuário.' });
     } finally {
       setActionLoadingId(null);
+    }
+  };
+
+  // Ação rápida: renovar vencimento do usuário (+dias ou data personalizada)
+  const handleQuickRenew = async (targetUser: UserAccount, days: number, customDate?: string) => {
+    setActionLoadingId(targetUser.id);
+    setIsRenewing(true);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const payload = customDate !== undefined 
+        ? { newExpirationDate: customDate }
+        : { days };
+
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(targetUser.id)}/renew`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` 
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message });
+        setRenewingUser(null);
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao renovar vencimento do cliente.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha ao comunicar com o servidor para renovação.' });
+    } finally {
+      setActionLoadingId(null);
+      setIsRenewing(false);
     }
   };
 
@@ -364,37 +539,70 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   if (!isOpen) return null;
 
   const filteredUsers = users.filter((u) => {
+    const role = normalizeUserRole(u.role);
+    const expInfo = getExpirationInfo(u.expirationDate);
+
+    // Filtro por categoria de role ou status de vencimento
+    if (filterRole === 'UsuarioComum' && role !== 'UsuarioComum') return false;
+    if (filterRole === 'AdminRevenda' && role !== 'AdminRevenda') return false;
+    if (filterRole === 'AdminMaster' && role !== 'AdminMaster') return false;
+    if (filterRole === 'expired' && !expInfo.isExpired) return false;
+
+    // Filtro por busca textual
     const q = searchQuery.toLowerCase().trim();
     if (!q) return true;
     return (
       u.name.toLowerCase().includes(q) ||
       u.username.toLowerCase().includes(q) ||
-      (u.email ? u.email.toLowerCase().includes(q) : false)
+      (u.email ? u.email.toLowerCase().includes(q) : false) ||
+      (u.createdBy ? u.createdBy.toLowerCase().includes(q) : false)
     );
   });
 
   const totalUsers = users.length;
+  const clientUsers = users.filter(u => normalizeUserRole(u.role) === 'UsuarioComum').length;
+  const revendaUsers = users.filter(u => normalizeUserRole(u.role) === 'AdminRevenda').length;
+  const masterUsers = users.filter(u => normalizeUserRole(u.role) === 'AdminMaster').length;
+  const expiredUsers = users.filter(u => getExpirationInfo(u.expirationDate).isExpired).length;
   const blockedUsersCount = users.filter((u) => u.isBlocked).length;
-  const activeUsersCount = totalUsers - blockedUsersCount;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
       <div 
         id="admin-users-modal"
-        className="w-full max-w-3xl bg-[#0C1222] border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
+        className="w-full max-w-4xl bg-[#0C1222] border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
       >
         {/* Modal Header */}
-        <div className="px-6 py-4 bg-[#111A2E] border-b border-slate-800 flex items-center justify-between">
+        <div className="px-5 py-3.5 bg-[#111A2E] border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/40 text-blue-400 flex items-center justify-center shadow-md shadow-blue-500/10">
-              <ShieldAlert className="w-5 h-5" />
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md ${
+              isMaster 
+                ? 'bg-amber-500/20 border border-amber-500/40 text-amber-400 shadow-amber-500/10'
+                : 'bg-blue-600/20 border border-blue-500/40 text-blue-400 shadow-blue-500/10'
+            }`}>
+              {isMaster ? <Crown className="w-5 h-5" /> : <Briefcase className="w-5 h-5" />}
             </div>
             <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                Painel do Administrador • Gestão de Usuários
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white">
+                  Painel de Gestão • IPTV Pro
+                </h2>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                  isMaster
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : isRevenda
+                    ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                    : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                }`}>
+                  {isMaster ? 'Admin Master' : isRevenda ? 'Admin Revenda' : 'Usuário Comum'}
+                </span>
+              </div>
               <p className="text-xs text-slate-400">
-                Cadastre novos usuários, bloqueie acessos não autorizados e gerencie credenciais.
+                {isMaster 
+                  ? 'Controle total: gerencie revendedores, clientes e datas de vencimento.'
+                  : isRevenda
+                  ? 'Gestão de revenda: adicione clientes e controle as datas de validade.'
+                  : 'Detalhes da conta e vencimento do acesso.'}
               </p>
             </div>
           </div>
@@ -407,9 +615,65 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </button>
         </div>
 
-        {/* Navigation Tabs: List Users vs Create User */}
-        <div className="px-6 bg-[#0E1628] border-b border-slate-800/80 flex items-center justify-between gap-2">
+        {/* Notice Banner based on role */}
+        <div className={`px-5 py-2 text-xs flex items-center justify-between border-b ${
+          isMaster
+            ? 'bg-amber-950/30 text-amber-200 border-amber-800/40'
+            : isRevenda
+            ? 'bg-blue-950/30 text-blue-200 border-blue-800/40'
+            : 'bg-slate-900 text-slate-300 border-slate-800'
+        }`}>
           <div className="flex items-center gap-2">
+            <Shield className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {isMaster 
+                ? 'Você possui autoridade de AdminMaster: pode adicionar ou remover revendedores e clientes livremente.'
+                : isRevenda
+                ? 'Você está no modo AdminRevenda: permissão concedida exclusivamente para gerenciar Usuários Comuns (Clientes).'
+                : 'Sua conta é de Usuário Comum. O painel de gestão requer acesso AdminMaster ou AdminRevenda.'}
+            </span>
+          </div>
+
+          {/* Registration Lock Toggle (only Master can toggle) */}
+          {isMaster ? (
+            <div className="flex items-center gap-2 bg-slate-900/60 px-2 py-0.5 rounded-lg border border-slate-700/60">
+              <span className="text-slate-300 font-medium text-[10px]">
+                Cadastros Públicos:
+              </span>
+              <button
+                id="toggle-registration-btn"
+                onClick={handleToggleRegistration}
+                disabled={settingLoading}
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-bold text-[9px] uppercase transition cursor-pointer ${
+                  allowRegistration
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                }`}
+                title="Ativar ou desativar tela de cadastro aberta no app"
+              >
+                {allowRegistration ? (
+                  <>
+                    <ToggleRight className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Abertos</span>
+                  </>
+                ) : (
+                  <>
+                    <ToggleLeft className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Fechados</span>
+                  </>
+                )}
+              </button>
+            </div>
+          ) : (
+            <span className="text-[11px] text-slate-400 font-mono">
+              Revendedor: @{currentAdmin.username}
+            </span>
+          )}
+        </div>
+
+        {/* Navigation Tabs: List Users vs Create User */}
+        <div className="px-5 bg-[#0E1628] border-b border-slate-800/80 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1 sm:gap-2">
             <button
               id="admin-tab-list"
               type="button"
@@ -424,7 +688,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
               }`}
             >
               <Users className="w-4 h-4 text-blue-400" />
-              <span>Usuários Cadastrados</span>
+              <span>Lista de Usuários</span>
               <span className="px-1.5 py-0.5 rounded-md bg-slate-800 text-[10px] text-slate-300 font-mono">
                 {totalUsers}
               </span>
@@ -439,190 +703,211 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
               }}
               className={`flex items-center gap-2 py-3 px-3 border-b-2 text-xs font-semibold transition cursor-pointer ${
                 activeTab === 'create'
-                  ? 'border-blue-500 text-white bg-blue-500/5'
+                  ? 'border-emerald-500 text-white bg-emerald-500/5'
                   : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
             >
               <UserPlus className="w-4 h-4 text-emerald-400" />
-              <span>+ Criar Novo Usuário</span>
+              <span>{isRevenda ? '+ Novo Cliente' : '+ Criar Novo Usuário'}</span>
             </button>
           </div>
 
-          {/* Registration Lock Toggle */}
-          <div className="hidden sm:flex items-center gap-2 bg-[#141F36] px-3 py-1 rounded-xl border border-slate-700/60 my-1.5">
-            <span className="text-slate-300 font-medium text-[11px]">
-              Cadastros Públicos:
-            </span>
-            <button
-              id="toggle-registration-btn"
-              onClick={handleToggleRegistration}
-              disabled={settingLoading}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded-lg font-bold text-[10px] uppercase transition cursor-pointer ${
-                allowRegistration
-                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30'
-                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30'
-              }`}
-              title="Clique para ativar ou suspender novos cadastros livres"
-            >
-              {allowRegistration ? (
-                <>
-                  <ToggleRight className="w-4 h-4 text-emerald-400" />
-                  <span>Liberados</span>
-                </>
-              ) : (
-                <>
-                  <ToggleLeft className="w-4 h-4 text-rose-400" />
-                  <span>Fechados</span>
-                </>
-              )}
-            </button>
-          </div>
+          <button
+            onClick={fetchUsers}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 transition cursor-pointer"
+            title="Atualizar lista"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-blue-400' : ''}`} />
+            <span className="hidden sm:inline">Atualizar</span>
+          </button>
         </div>
 
-        {/* Global Stats bar for List tab */}
-        {activeTab === 'list' && (
-          <div className="px-6 py-2.5 bg-[#0A101D] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-1.5">
-                <span className="text-slate-400">Total:</span>
-                <span className="font-bold text-white font-mono">{totalUsers}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                <span className="text-slate-400">Ativos:</span>
-                <span className="font-bold text-emerald-400 font-mono">{activeUsersCount}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-rose-500" />
-                <span className="text-slate-400">Bloqueados:</span>
-                <span className="font-bold text-rose-400 font-mono">{blockedUsersCount}</span>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setActiveTab('create')}
-              className="flex items-center gap-1 text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 hover:underline cursor-pointer"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Adicionar novo usuário agora</span>
-            </button>
-          </div>
-        )}
-
-        {/* Feedback Alert */}
+        {/* Feedback notification banner */}
         {feedbackMsg && (
-          <div className={`px-6 py-2.5 flex items-center justify-between text-xs border-b ${
+          <div className={`px-5 py-2.5 text-xs flex items-center justify-between border-b transition-all ${
             feedbackMsg.type === 'success'
-              ? 'bg-emerald-950/60 border-emerald-800 text-emerald-300'
-              : 'bg-rose-950/60 border-rose-800 text-rose-300'
+              ? 'bg-emerald-950/80 text-emerald-200 border-emerald-800/80'
+              : 'bg-rose-950/80 text-rose-200 border-rose-800/80'
           }`}>
             <div className="flex items-center gap-2">
               {feedbackMsg.type === 'success' ? (
-                <CheckCircle className="w-4 h-4 shrink-0 text-emerald-400" />
+                <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
               ) : (
-                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
               )}
               <span>{feedbackMsg.text}</span>
             </div>
             <button
               onClick={() => setFeedbackMsg(null)}
-              className="text-slate-400 hover:text-white ml-2 cursor-pointer"
+              className="text-slate-400 hover:text-white p-0.5 cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
 
-        {/* TAB 1: USERS LIST */}
+        {/* TAB 1: LIST USERS */}
         {activeTab === 'list' && (
-          <>
-            {/* Search and Filter */}
-            <div className="p-4 bg-[#0B1120] border-b border-slate-800/80 flex items-center justify-between gap-3">
-              <div className="relative flex-1 max-w-md">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Search and Filters Bar */}
+            <div className="p-4 bg-[#0B1120] border-b border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+              {/* Search input */}
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
-                  id="search-users-input"
+                  id="admin-search-users-input"
                   type="text"
-                  placeholder="Buscar por nome, usuário ou e-mail..."
+                  placeholder="Buscar por nome, @login ou email..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 transition"
                 />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-0.5 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
 
-              <div className="flex items-center gap-2">
+              {/* Filter Pills */}
+              <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 custom-scrollbar">
                 <button
-                  onClick={() => setActiveTab('create')}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-md shadow-emerald-600/20 transition cursor-pointer"
+                  onClick={() => setFilterRole('all')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'all'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
                 >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Criar Usuário</span>
+                  Todos ({totalUsers})
                 </button>
 
                 <button
-                  onClick={fetchUsers}
-                  disabled={loading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition cursor-pointer"
-                  title="Atualizar lista"
+                  onClick={() => setFilterRole('UsuarioComum')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'UsuarioComum'
+                      ? 'bg-slate-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                  <span className="hidden sm:inline">Atualizar</span>
+                  Clientes ({clientUsers})
+                </button>
+
+                <button
+                  onClick={() => setFilterRole('AdminRevenda')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'AdminRevenda'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Revendas ({revendaUsers})
+                </button>
+
+                {isMaster && (
+                  <button
+                    onClick={() => setFilterRole('AdminMaster')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                      filterRole === 'AdminMaster'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Masters ({masterUsers})
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setFilterRole('expired')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 flex items-center gap-1 ${
+                    filterRole === 'expired'
+                      ? 'bg-rose-600 text-white'
+                      : 'bg-slate-800 text-rose-400 hover:text-rose-300'
+                  }`}
+                >
+                  <Clock className="w-3 h-3" />
+                  Vencidos ({expiredUsers})
                 </button>
               </div>
             </div>
 
-            {/* User List Content */}
+            {/* Users List Scrollable View */}
             <div className="flex-1 overflow-y-auto p-4 space-y-2.5 custom-scrollbar">
-              {loading ? (
-                <div className="py-16 text-center text-slate-400 flex flex-col items-center justify-center">
-                  <RefreshCw className="w-6 h-6 animate-spin text-blue-400 mb-2" />
-                  <p className="text-xs">Carregando contas cadastradas...</p>
+              {loading && users.length === 0 ? (
+                <div className="py-12 flex flex-col items-center justify-center text-slate-400 gap-2">
+                  <RefreshCw className="w-6 h-6 animate-spin text-blue-500" />
+                  <span className="text-xs">Carregando usuários do sistema...</span>
                 </div>
               ) : filteredUsers.length === 0 ? (
-                <div className="py-16 text-center text-slate-400 space-y-2">
-                  <Users className="w-8 h-8 text-slate-500 mx-auto mb-2" />
-                  <p className="text-sm font-medium">Nenhum usuário localizado.</p>
-                  <p className="text-xs text-slate-500">
-                    {searchQuery ? `Nenhum resultado para "${searchQuery}".` : 'Nenhuma conta cadastrada além do administrador.'}
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <Users className="w-8 h-8 mx-auto text-slate-600" />
+                  <p className="text-xs">
+                    {searchQuery ? `Nenhum usuário encontrado para "${searchQuery}".` : 'Nenhum usuário cadastrado nesta categoria.'}
                   </p>
                   <button
                     onClick={() => setActiveTab('create')}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 mt-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition cursor-pointer"
                   >
                     <UserPlus className="w-3.5 h-3.5" />
-                    <span>Criar Primeiro Usuário</span>
+                    <span>{isRevenda ? 'Cadastrar Novo Cliente' : 'Criar Novo Usuário'}</span>
                   </button>
                 </div>
               ) : (
                 filteredUsers.map((user) => {
+                  const role = normalizeUserRole(user.role);
                   const isMe = user.id === currentAdmin.id;
                   const isActionRunning = actionLoadingId === user.id;
+                  const expInfo = getExpirationInfo(user.expirationDate);
+
+                  // Permissões de controle:
+                  // AdminMaster pode gerenciar todos (exceto excluir a si mesmo).
+                  // AdminRevenda SÓ pode gerenciar UsuarioComum.
+                  const canEdit = isMaster || (isRevenda && (role === 'UsuarioComum' || isMe));
+                  const canDelete = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
+                  const canBlock = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
+                  const canRenew = role === 'UsuarioComum' || isMaster;
 
                   return (
                     <div
                       key={user.id}
                       id={`user-row-${user.id}`}
-                      className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition ${
+                      className={`p-3.5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-3 transition ${
                         user.isBlocked
                           ? 'bg-rose-950/20 border-rose-900/50'
-                          : user.role === 'admin'
-                          ? 'bg-[#111A2E] border-blue-500/40'
+                          : expInfo.isExpired
+                          ? 'bg-amber-950/15 border-amber-900/40'
+                          : role === 'AdminMaster'
+                          ? 'bg-[#151D33] border-amber-500/30'
+                          : role === 'AdminRevenda'
+                          ? 'bg-[#121B32] border-blue-500/30'
                           : 'bg-[#121A30] border-slate-800/80 hover:border-slate-700'
                       }`}
                     >
-                      {/* User Profile Info */}
-                      <div className="flex items-center gap-3 min-w-0">
+                      {/* Left: Avatar & User Info */}
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
                         <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border ${
                           user.isBlocked
                             ? 'bg-rose-900/30 border-rose-700/50 text-rose-300'
-                            : user.role === 'admin'
-                            ? 'bg-blue-600/30 border-blue-500/50 text-blue-300'
+                            : role === 'AdminMaster'
+                            ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                            : role === 'AdminRevenda'
+                            ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
                             : 'bg-slate-800 border-slate-700 text-slate-300'
                         }`}>
-                          {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
+                          {role === 'AdminMaster' ? (
+                            <Crown className="w-5 h-5" />
+                          ) : role === 'AdminRevenda' ? (
+                            <Briefcase className="w-4 h-4" />
+                          ) : (
+                            user.name ? user.name.charAt(0).toUpperCase() : 'U'
+                          )}
                         </div>
 
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-bold text-white text-xs truncate">
                               {user.name}
@@ -631,22 +916,66 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                               @{user.username}
                             </span>
 
-                            {/* Status Badges */}
-                            {user.role === 'admin' && (
-                              <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[10px] font-bold">
-                                Admin
+                            {/* Cargo Badges */}
+                            {role === 'AdminMaster' && (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Crown className="w-2.5 h-2.5" />
+                                Admin Master
                               </span>
                             )}
 
-                            {user.isBlocked ? (
+                            {role === 'AdminRevenda' && (
+                              <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Briefcase className="w-2.5 h-2.5" />
+                                Admin Revenda
+                              </span>
+                            )}
+
+                            {role === 'UsuarioComum' && (
+                              <span className="px-2 py-0.5 rounded-full bg-slate-700/60 text-slate-300 border border-slate-600/50 text-[10px] font-semibold flex items-center gap-1">
+                                <UserIcon className="w-2.5 h-2.5 text-slate-400" />
+                                Cliente
+                              </span>
+                            )}
+
+                            {/* Vencimento Badge */}
+                            {expInfo.status === 'vitalicio' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Sparkles className="w-2.5 h-2.5" />
+                                Vitalício
+                              </span>
+                            ) : expInfo.isExpired ? (
+                              <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center gap-1 animate-pulse">
+                                <Clock className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            ) : expInfo.status === 'warning' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <AlertTriangle className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Calendar className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            )}
+
+                            {/* Blocked Badge */}
+                            {user.isBlocked && (
                               <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center gap-1">
                                 <Lock className="w-2.5 h-2.5" />
                                 Bloqueado
                               </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1">
-                                <CheckCircle className="w-2.5 h-2.5" />
-                                Ativo
+                            )}
+
+                            {user.playlistUrl && (
+                              <span
+                                className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-semibold flex items-center gap-1 max-w-[140px] truncate"
+                                title={`Lista vinculada: ${user.playlistName || user.playlistUrl}`}
+                              >
+                                <Tv className="w-2.5 h-2.5 shrink-0" />
+                                <span className="truncate">{user.playlistName || 'Lista IPTV'}</span>
                               </span>
                             )}
 
@@ -657,75 +986,91 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                             )}
                           </div>
 
-                          <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-0.5 truncate">
+                          {/* Secondary info: Creator & Email & Date */}
+                          <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-1 flex-wrap">
                             {user.email && <span>{user.email}</span>}
+                            {user.createdBy && (
+                              <span className="text-[10px] text-blue-300/80 bg-blue-950/40 px-1.5 py-0.5 rounded border border-blue-900/40">
+                                Criado por: @{user.createdBy}
+                              </span>
+                            )}
                             {user.createdAt && (
                               <span className="flex items-center gap-1 text-[10px] text-slate-500">
                                 <Calendar className="w-3 h-3" />
-                                {new Date(user.createdAt).toLocaleDateString('pt-BR')}
+                                Cadastrado em {new Date(user.createdAt).toLocaleDateString('pt-BR')}
                               </span>
                             )}
                           </div>
                         </div>
                       </div>
 
-                      {/* Actions: Edit / Block / Delete */}
-                      <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                      {/* Right: Actions */}
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                        {/* Quick Renew +30d Button */}
+                        {canRenew && (
+                          <button
+                            id={`quick-renew-${user.id}`}
+                            onClick={() => handleQuickRenew(user, 30)}
+                            disabled={isActionRunning}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 transition cursor-pointer"
+                            title="Renovar +30 dias de acesso"
+                          >
+                            <CalendarPlus className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>+30d</span>
+                          </button>
+                        )}
+
                         {/* Edit Button */}
-                        <button
-                          id={`edit-user-${user.id}`}
-                          onClick={() => handleOpenEdit(user)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 transition cursor-pointer"
-                          title="Editar dados e redefinir senha"
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                          <span>Editar</span>
-                        </button>
-
-                        {isMe ? (
-                          <span className="text-[11px] text-slate-500 italic px-2 py-1 bg-slate-800/40 rounded-lg border border-slate-700/40">
-                            Conta Principal
-                          </span>
+                        {canEdit ? (
+                          <button
+                            id={`edit-user-${user.id}`}
+                            onClick={() => handleOpenEdit(user)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 transition cursor-pointer"
+                            title="Editar dados, validade e senha"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                            <span>Editar</span>
+                          </button>
                         ) : (
-                          <>
-                            {/* Block / Unblock button */}
-                            <button
-                              id={`toggle-block-${user.id}`}
-                              onClick={() => handleToggleBlock(user)}
-                              disabled={isActionRunning}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                                user.isBlocked
-                                  ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
-                                  : 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
-                              }`}
-                              title={user.isBlocked ? 'Desbloquear acesso' : 'Bloquear acesso do usuário'}
-                            >
-                              {isActionRunning ? (
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                              ) : user.isBlocked ? (
-                                <>
-                                  <Unlock className="w-3.5 h-3.5" />
-                                  <span>Desbloquear</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Lock className="w-3.5 h-3.5" />
-                                  <span>Bloquear</span>
-                                </>
-                              )}
-                            </button>
+                          <span className="text-[10px] text-slate-500 px-2 py-1 bg-slate-900/50 rounded-lg border border-slate-800">
+                            Sem Permissão
+                          </span>
+                        )}
 
-                            {/* Delete button */}
-                            <button
-                              id={`delete-user-${user.id}`}
-                              onClick={() => handleDeleteUser(user)}
-                              disabled={isActionRunning}
-                              className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80 hover:border-rose-500/40 transition cursor-pointer"
-                              title="Excluir conta permanentemente"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </>
+                        {/* Block/Unblock Button */}
+                        {canBlock && (
+                          <button
+                            id={`toggle-block-${user.id}`}
+                            onClick={() => handleToggleBlock(user)}
+                            disabled={isActionRunning}
+                            className={`p-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                              user.isBlocked
+                                ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
+                                : 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
+                            }`}
+                            title={user.isBlocked ? 'Desbloquear acesso' : 'Bloquear acesso do usuário'}
+                          >
+                            {isActionRunning ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : user.isBlocked ? (
+                              <Unlock className="w-3.5 h-3.5" />
+                            ) : (
+                              <Lock className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
+
+                        {/* Delete Button */}
+                        {canDelete && (
+                          <button
+                            id={`delete-user-${user.id}`}
+                            onClick={() => handleDeleteUser(user)}
+                            disabled={isActionRunning}
+                            className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80 hover:border-rose-500/40 transition cursor-pointer"
+                            title={role === 'AdminRevenda' ? 'Excluir Revendedor (Apenas Master)' : 'Excluir conta definitivamente'}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </div>
                     </div>
@@ -733,173 +1078,302 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                 })
               )}
             </div>
-          </>
+          </div>
         )}
 
-        {/* TAB 2: CREATE USER AREA */}
+        {/* TAB 2: CREATE USER FORM */}
         {activeTab === 'create' && (
-          <div className="flex-1 overflow-y-auto p-5 sm:p-6 custom-scrollbar bg-[#0B1120]">
-            <div className="max-w-xl mx-auto space-y-6">
-              {/* Header Box */}
-              <div className="p-4 rounded-xl bg-[#121A30] border border-slate-700/80 flex items-start gap-3">
-                <div className="w-9 h-9 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
-                  <UserPlus className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white">Criar Novo Acesso</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Preencha os dados abaixo para gerar um usuário. A conta estará ativa imediatamente e pronta para uso.
-                  </p>
-                </div>
+          <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
+            <div className="max-w-2xl mx-auto space-y-4">
+              <div className="p-4 rounded-xl bg-[#0E1628] border border-slate-800">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <UserPlus className="w-4 h-4 text-emerald-400" />
+                  <span>
+                    {isRevenda ? 'Cadastrar Novo Cliente (Usuário Comum)' : 'Cadastrar Novo Usuário ou Revendedor'}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Defina o cargo, credenciais de acesso, data de validade/vencimento e lista M3U.
+                </p>
               </div>
 
-              {/* Form */}
               <form onSubmit={handleCreateUserSubmit} className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* Full Name */}
+                {/* Nome Completo e Nome de Login */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                      Nome Completo
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome Completo ou Apelido
                     </label>
-                    <div className="relative">
-                      <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      <input
-                        id="admin-create-name"
-                        type="text"
-                        placeholder="Ex: Carlos Eduardo"
-                        value={formName}
-                        onChange={(e) => setFormName(e.target.value)}
-                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                        required
-                      />
-                    </div>
+                    <input
+                      id="admin-create-name"
+                      type="text"
+                      placeholder="Ex: João Silva"
+                      value={formName}
+                      onChange={(e) => setFormName(e.target.value)}
+                      className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
                   </div>
 
-                  {/* Username */}
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
                       Nome de Usuário (Login)
                     </label>
                     <div className="relative">
-                      <span className="text-slate-400 font-mono text-xs absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                        @
-                      </span>
+                      <span className="text-slate-400 font-mono text-xs absolute left-3 top-1/2 -translate-y-1/2">@</span>
                       <input
                         id="admin-create-username"
                         type="text"
-                        placeholder="carloseduardo"
+                        placeholder="joaosilva"
                         value={formUsername}
                         onChange={(e) => setFormUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
-                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                         required
                       />
                     </div>
                   </div>
                 </div>
 
-                {/* Email (Optional) */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    E-mail <span className="text-slate-500 font-normal">(opcional)</span>
-                  </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                {/* Email e Senha */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      E-mail <span className="text-slate-500 font-normal">(opcional)</span>
+                    </label>
                     <input
                       id="admin-create-email"
                       type="email"
-                      placeholder="usuario@email.com"
+                      placeholder="cliente@email.com"
                       value={formEmail}
                       onChange={(e) => setFormEmail(e.target.value)}
-                      className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                      className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-semibold text-slate-300">
+                        Senha de Acesso
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleGeneratePassword}
+                        className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer hover:underline"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Gerar Senha</span>
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input
+                        id="admin-create-password"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="Mínimo 4 caracteres"
+                        value={formPassword}
+                        onChange={(e) => setFormPassword(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 pr-10 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer p-1"
+                        title={showPassword ? 'Ocultar senha' : 'Exibir senha'}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                {/* Password & Password Generator */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-xs font-semibold text-slate-300">
-                      Senha de Acesso
+                {/* Data de Vencimento do Cliente */}
+                <div className="p-3.5 rounded-xl bg-slate-900/70 border border-slate-700/70 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-emerald-300 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Data de Vencimento do Cliente</span>
                     </label>
-                    <button
-                      type="button"
-                      onClick={handleGeneratePassword}
-                      className="text-[11px] text-blue-400 hover:text-blue-300 font-medium flex items-center gap-1 cursor-pointer hover:underline"
-                    >
-                      <Sparkles className="w-3 h-3" />
-                      <span>Gerar Senha Automática</span>
-                    </button>
+                    <span className="text-[11px] text-slate-400">
+                      {formExpirationDate ? formatDateDisplay(formExpirationDate) : 'Vitalício'}
+                    </span>
                   </div>
-                  <div className="relative">
-                    <Key className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                     <input
-                      id="admin-create-password"
-                      type={showPassword ? 'text' : 'password'}
-                      placeholder="Mínimo 4 caracteres"
-                      value={formPassword}
-                      onChange={(e) => setFormPassword(e.target.value)}
-                      className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-9 pr-10 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition font-mono"
-                      required
+                      id="admin-create-expiration"
+                      type="date"
+                      value={formExpirationDate}
+                      onChange={(e) => setFormExpirationDate(e.target.value)}
+                      className="bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                     />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-0.5 transition cursor-pointer"
-                      title={showPassword ? 'Ocultar senha' : 'Exibir senha'}
-                    >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
+
+                    {/* Botões rápidos de acréscimo de dias */}
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(30)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +30 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(60)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +60 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(90)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +90 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(365)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +1 Ano
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormExpirationDate('')}
+                        className="px-2.5 py-1.5 rounded-lg bg-purple-900/30 hover:bg-purple-900/50 text-[11px] font-semibold text-purple-300 border border-purple-700/50 transition cursor-pointer"
+                      >
+                        Vitalício
+                      </button>
+                    </div>
                   </div>
+                  <p className="text-[10px] text-slate-400">
+                    Após essa data, o cliente não conseguirá mais efetuar login ou carregar os canais até que sua conta seja renovada.
+                  </p>
                 </div>
 
-                {/* Role Selector */}
+                {/* Seleção de Cargo (Hierarquia de Permissões) */}
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Nível de Acesso (Cargo)
+                    Nível de Acesso (Cargo no Sistema)
                   </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition ${
-                      formRole === 'user'
-                        ? 'bg-blue-600/15 border-blue-500/60 ring-1 ring-blue-500/40 text-white'
-                        : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
-                    }`}>
-                      <input
-                        type="radio"
-                        name="user-role"
-                        checked={formRole === 'user'}
-                        onChange={() => setFormRole('user')}
-                        className="mt-0.5 text-blue-600 focus:ring-blue-500"
-                      />
-                      <div>
-                        <div className="text-xs font-bold">Usuário Padrão</div>
-                        <div className="text-[11px] text-slate-400 leading-tight mt-0.5">
-                          Acesso aos canais ao vivo, player HLS e visualização de código.
-                        </div>
-                      </div>
-                    </label>
 
-                    <label className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition ${
-                      formRole === 'admin'
-                        ? 'bg-purple-600/15 border-purple-500/60 ring-1 ring-purple-500/40 text-white'
-                        : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
-                    }`}>
-                      <input
-                        type="radio"
-                        name="user-role"
-                        checked={formRole === 'admin'}
-                        onChange={() => setFormRole('admin')}
-                        className="mt-0.5 text-purple-600 focus:ring-purple-500"
-                      />
+                  {isRevenda ? (
+                    <div className="p-3 rounded-xl bg-blue-950/20 border border-blue-500/30 flex items-start gap-2.5">
+                      <Briefcase className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
                       <div>
-                        <div className="text-xs font-bold flex items-center gap-1.5">
-                          <span>Administrador</span>
-                          <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
-                        </div>
-                        <div className="text-[11px] text-slate-400 leading-tight mt-0.5">
-                          Acesso irrestrito + painel de gerenciar e bloquear usuários.
+                        <div className="text-xs font-bold text-white">Usuário Comum (Cliente Final)</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Como <strong>AdminRevenda</strong>, todas as contas cadastradas por você são clientes finais. Apenas o AdminMaster tem permissão para cadastrar ou remover outros revendedores.
                         </div>
                       </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      {/* Opção: UsuarioComum */}
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'UsuarioComum'
+                          ? 'bg-slate-700/40 border-emerald-500/80 ring-1 ring-emerald-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'UsuarioComum'}
+                          onChange={() => setFormRole('UsuarioComum')}
+                          className="mt-0.5 text-emerald-500 focus:ring-emerald-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <UserIcon className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Usuário Comum</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Cliente final com player e canais ao vivo.
+                          </div>
+                        </div>
+                      </label>
+
+                      {/* Opção: AdminRevenda */}
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'AdminRevenda'
+                          ? 'bg-blue-600/15 border-blue-500/80 ring-1 ring-blue-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'AdminRevenda'}
+                          onChange={() => setFormRole('AdminRevenda')}
+                          className="mt-0.5 text-blue-600 focus:ring-blue-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                            <span>Admin Revenda</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Pode adicionar e gerenciar clientes comuns.
+                          </div>
+                        </div>
+                      </label>
+
+                      {/* Opção: AdminMaster */}
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'AdminMaster'
+                          ? 'bg-amber-600/15 border-amber-500/80 ring-1 ring-amber-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'AdminMaster'}
+                          onChange={() => setFormRole('AdminMaster')}
+                          className="mt-0.5 text-amber-500 focus:ring-amber-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <Crown className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Admin Master</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Conta principal com controle irrestrito.
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                {/* Vincular Lista M3U Opcional */}
+                <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-700/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">
+                      <Tv className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Vincular Lista M3U ao Cliente</span>
                     </label>
+                    <span className="text-[10px] text-slate-400">(Opcional)</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-1">
+                      <input
+                        id="admin-create-playlist-name"
+                        type="text"
+                        placeholder="Nome (ex: Canais VIP)"
+                        value={formPlaylistName}
+                        onChange={(e) => setFormPlaylistName(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <input
+                        id="admin-create-playlist-url"
+                        type="url"
+                        placeholder="https://exemplo.com/lista.m3u"
+                        value={formPlaylistUrl}
+                        onChange={(e) => setFormPlaylistUrl(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-[11px]"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -915,7 +1389,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   ) : (
                     <>
                       <UserPlus className="w-4 h-4" />
-                      <span>Cadastrar e Liberar Usuário</span>
+                      <span>Cadastrar e Liberar Acesso</span>
                     </>
                   )}
                 </button>
@@ -923,11 +1397,11 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
 
               {/* Created User Credentials Box */}
               {lastCreatedUser && (
-                <div className="p-4 rounded-xl bg-slate-900 border border-emerald-500/40 space-y-2">
+                <div className="p-4 rounded-xl bg-slate-900 border border-emerald-500/40 space-y-2.5 animate-in fade-in duration-200">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
                       <CheckCircle className="w-4 h-4" />
-                      Último Usuário Criado
+                      Dados do Usuário Cadastrado
                     </span>
                     <button
                       type="button"
@@ -942,12 +1416,12 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                       ) : (
                         <>
                           <Copy className="w-3.5 h-3.5" />
-                          <span>Copiar Acesso</span>
+                          <span>Copiar Acesso para Cliente</span>
                         </>
                       )}
                     </button>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 p-2.5 bg-black/40 rounded-lg text-xs font-mono text-slate-300">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2.5 bg-black/40 rounded-lg text-xs font-mono text-slate-300">
                     <div>
                       <span className="text-slate-500 block text-[10px]">USUÁRIO:</span>
                       <span className="text-white font-bold">{lastCreatedUser.username}</span>
@@ -955,6 +1429,16 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                     <div>
                       <span className="text-slate-500 block text-[10px]">SENHA:</span>
                       <span className="text-emerald-300 font-bold">{lastCreatedUser.password}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">CARGO:</span>
+                      <span className="text-blue-300 font-bold">{lastCreatedUser.role}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">VENCIMENTO:</span>
+                      <span className="text-amber-300 font-bold">
+                        {lastCreatedUser.expirationDate ? formatDateDisplay(lastCreatedUser.expirationDate) : 'Vitalício'}
+                      </span>
                     </div>
                   </div>
                   <div className="text-right">
@@ -972,11 +1456,11 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
         )}
 
         {/* Modal Footer */}
-        <div className="px-6 py-3.5 bg-[#111A2E] border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-          <p>
-            {activeTab === 'list'
-              ? '*Usuários bloqueados perdem a sessão imediatamente e recebem mensagem de acesso negado.'
-              : '*Contas criadas pelo administrador são ativadas imediatamente sem restrições.'}
+        <div className="px-5 py-3 bg-[#111A2E] border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+          <p className="text-[11px]">
+            {isMaster 
+              ? 'Painel Master: Controle hierárquico ativo com bloqueio instantâneo e revogação de tokens.'
+              : 'Painel Revenda: Gerencie a validade e acesso dos seus clientes com agilidade.'}
           </p>
           <button
             onClick={onClose}
@@ -988,15 +1472,15 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
 
         {/* SUB-MODAL: EDITAR USUÁRIO */}
         {editingUser && (
-          <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3">
             <div className="w-full max-w-lg bg-[#0F172A] border border-blue-500/40 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-              <div className="px-5 py-4 bg-[#14203A] border-b border-slate-800 flex items-center justify-between">
+              <div className="px-5 py-3.5 bg-[#14203A] border-b border-slate-800 flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/40 text-blue-400 flex items-center justify-center">
                     <Pencil className="w-4 h-4" />
                   </div>
                   <div>
-                    <h4 className="text-sm font-bold text-white">Editar Usuário</h4>
+                    <h4 className="text-sm font-bold text-white">Editar Dados & Validade</h4>
                     <span className="text-[11px] text-slate-400 font-mono">@{editingUser.username}</span>
                   </div>
                 </div>
@@ -1009,41 +1493,42 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                 </button>
               </div>
 
-              <form onSubmit={handleSaveEdit} className="p-5 space-y-4 max-h-[80vh] overflow-y-auto custom-scrollbar">
-                {/* Nome Completo */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Nome Completo
-                  </label>
-                  <input
-                    id="edit-user-name"
-                    type="text"
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required
-                  />
-                </div>
-
-                {/* Nome de Usuário (Login) */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Nome de Usuário (Login)
-                  </label>
-                  <div className="relative">
-                    <span className="text-slate-400 font-mono text-xs absolute left-3 top-1/2 -translate-y-1/2">@</span>
+              <form onSubmit={handleSaveEdit} className="p-5 space-y-3.5 max-h-[80vh] overflow-y-auto custom-scrollbar">
+                {/* Nome Completo e Username */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome Completo
+                    </label>
                     <input
-                      id="edit-user-username"
+                      id="edit-user-name"
                       type="text"
-                      value={editUsername}
-                      onChange={(e) => setEditUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
-                      className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                       required
                     />
                   </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome de Usuário (Login)
+                    </label>
+                    <div className="relative">
+                      <span className="text-slate-400 font-mono text-xs absolute left-3 top-1/2 -translate-y-1/2">@</span>
+                      <input
+                        id="edit-user-username"
+                        type="text"
+                        value={editUsername}
+                        onChange={(e) => setEditUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                        required
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                {/* E-mail (Opcional) */}
+                {/* E-mail */}
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">
                     E-mail <span className="text-slate-500 font-normal">(opcional)</span>
@@ -1054,15 +1539,137 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                     value={editEmail}
                     onChange={(e) => setEditEmail(e.target.value)}
                     placeholder="email@exemplo.com"
-                    className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
+                </div>
+
+                {/* DATA DE VENCIMENTO DO CLIENTE (Requisito Chave do Usuário) */}
+                <div className="p-3.5 rounded-xl bg-slate-900/80 border border-emerald-500/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                      <Calendar className="w-4 h-4 text-emerald-400" />
+                      <span>Alterar Data de Vencimento do Cliente</span>
+                    </label>
+                    <span className="text-[11px] font-mono text-emerald-300">
+                      {editExpirationDate ? formatDateDisplay(editExpirationDate) : 'Vitalício'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      id="edit-user-expiration"
+                      type="date"
+                      value={editExpirationDate}
+                      onChange={(e) => setEditExpirationDate(e.target.value)}
+                      className="bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+
+                    {/* Botões rápidos de extensão */}
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(30)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 30 dias"
+                      >
+                        +30d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(60)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 60 dias"
+                      >
+                        +60d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(90)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 90 dias"
+                      >
+                        +90d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(365)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 1 ano"
+                      >
+                        +1a
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditExpirationDate('')}
+                        className="px-2 py-1 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 text-[11px] font-semibold text-purple-300 border border-purple-700/50 cursor-pointer"
+                        title="Remover data e deixar vitalício"
+                      >
+                        Vitalício
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Cargo (apenas AdminMaster pode alterar cargos) */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Cargo / Nível de Acesso
+                  </label>
+
+                  {isMaster ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'UsuarioComum' ? 'bg-slate-700/40 border-emerald-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'UsuarioComum'}
+                          onChange={() => setEditRole('UsuarioComum')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Cliente</span>
+                      </label>
+
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'AdminRevenda' ? 'bg-blue-600/20 border-blue-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'AdminRevenda'}
+                          onChange={() => setEditRole('AdminRevenda')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Revenda</span>
+                      </label>
+
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'AdminMaster' ? 'bg-amber-600/20 border-amber-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'AdminMaster'}
+                          onChange={() => setEditRole('AdminMaster')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Master</span>
+                      </label>
+                    </div>
+                  ) : (
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-300 flex items-center justify-between">
+                      <span>Cargo Atual: <strong>{normalizeUserRole(editingUser.role)}</strong></span>
+                      <span className="text-[10px] text-slate-500">Alteração exclusiva do AdminMaster</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Nova Senha */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-xs font-semibold text-slate-300">
-                      Redefinir Senha <span className="text-slate-500 font-normal">(deixe vazio para não alterar)</span>
+                      Redefinir Senha <span className="text-slate-500 font-normal">(deixe vazio para manter a atual)</span>
                     </label>
                     <button
                       type="button"
@@ -1080,7 +1687,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                       value={editPassword}
                       onChange={(e) => setEditPassword(e.target.value)}
                       placeholder="Digite uma nova senha (mínimo 4 caracteres)"
-                      className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 pr-10 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                      className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 pr-10 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                     />
                     <button
                       type="button"
@@ -1093,57 +1700,60 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   </div>
                 </div>
 
-                {/* Cargo */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                    Nível de Acesso (Cargo)
-                  </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer ${
-                      editRole === 'user' ? 'bg-blue-600/20 border-blue-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
-                    }`}>
-                      <input
-                        type="radio"
-                        name="edit-role"
-                        checked={editRole === 'user'}
-                        onChange={() => setEditRole('user')}
-                        disabled={editingUser.id === currentAdmin.id}
-                      />
-                      <span className="text-xs font-medium">Usuário Comum</span>
+                {/* Lista M3U Salva do Usuário */}
+                <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-700/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">
+                      <Tv className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Lista M3U Vinculada</span>
                     </label>
-
-                    <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer ${
-                      editRole === 'admin' ? 'bg-purple-600/20 border-purple-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
-                    }`}>
-                      <input
-                        type="radio"
-                        name="edit-role"
-                        checked={editRole === 'admin'}
-                        onChange={() => setEditRole('admin')}
-                      />
-                      <span className="text-xs font-medium flex items-center gap-1">
-                        <span>Administrador</span>
-                        <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
-                      </span>
-                    </label>
+                    {editPlaylistUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditPlaylistUrl('');
+                          setEditPlaylistName('');
+                        }}
+                        className="text-[10px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                      >
+                        Desvincular Lista
+                      </button>
+                    )}
                   </div>
-                  {editingUser.id === currentAdmin.id && (
-                    <span className="text-[10px] text-slate-500 block mt-1">
-                      *Você não pode remover seu próprio privilégio de administrador.
-                    </span>
-                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-1">
+                      <input
+                        id="edit-user-playlist-name"
+                        type="text"
+                        placeholder="Nome da Lista"
+                        value={editPlaylistName}
+                        onChange={(e) => setEditPlaylistName(e.target.value)}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <input
+                        id="edit-user-playlist-url"
+                        type="url"
+                        placeholder="https://exemplo.com/lista.m3u"
+                        value={editPlaylistUrl}
+                        onChange={(e) => setEditPlaylistUrl(e.target.value)}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-[11px]"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 {/* Status da Conta (Bloqueado / Ativo) */}
                 {editingUser.id !== currentAdmin.id && (
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
                       Status de Acesso
                     </label>
                     <button
                       type="button"
                       onClick={() => setEditIsBlocked(!editIsBlocked)}
-                      className={`w-full flex items-center justify-between p-3 rounded-xl border text-xs font-semibold transition cursor-pointer ${
+                      className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
                         editIsBlocked
                           ? 'bg-rose-950/30 border-rose-500/50 text-rose-300'
                           : 'bg-emerald-950/30 border-emerald-500/50 text-emerald-300'
@@ -1190,17 +1800,18 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
 
         {/* SUB-MODAL: CONFIRMAR EXCLUSÃO DEFINITIVA */}
         {userToDelete && (
-          <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
             <div className="w-full max-w-md bg-[#0F172A] border border-rose-500/40 rounded-2xl shadow-2xl p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-rose-600/20 border border-rose-500/40 text-rose-400 flex items-center justify-center shrink-0">
                   <Trash2 className="w-5 h-5" />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-white">Excluir Conta Definitivamente?</h4>
+                  <h4 className="text-sm font-bold text-white">Excluir Conta Permanentemente?</h4>
                   <p className="text-xs text-slate-400 mt-1">
                     Você está prestes a excluir a conta de <span className="text-white font-semibold">@{userToDelete.username}</span> ({userToDelete.name}).
-                    Todas as sessões ativas serão canceladas e o acesso será excluído permanentemente.
+                    Cargo: <span className="text-blue-300 font-bold">{normalizeUserRole(userToDelete.role)}</span>.
+                    Todas as sessões ativas serão canceladas e o acesso será revogado.
                   </p>
                 </div>
               </div>

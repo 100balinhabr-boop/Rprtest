@@ -24,14 +24,22 @@ export interface AndroidFile {
   content: string;
 }
 
+export type UserRole = 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' | 'admin' | 'user';
+
 export interface UserAccount {
   id: string;
   username: string;
   name: string;
   email?: string;
-  role: 'admin' | 'user';
+  role: UserRole;
   createdAt: string;
   isBlocked?: boolean;
+  playlistUrl?: string;
+  playlistName?: string;
+  playlistUpdatedAt?: string;
+  expirationDate?: string | null; // Data de vencimento YYYY-MM-DD ou ISO
+  createdBy?: string; // Username ou ID do criador da conta
+  createdByName?: string;
 }
 
 export interface AuthResponse {

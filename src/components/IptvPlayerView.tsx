@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import Hls from 'hls.js';
-import { Channel } from '../types';
+import { Channel, UserAccount } from '../types';
 import { 
   Play, 
   Pause, 
@@ -18,7 +19,12 @@ import {
   MonitorPlay,
   RotateCw,
   FolderOpen,
-  X
+  Download,
+  Check,
+  X,
+  Users,
+  Crown,
+  Briefcase
 } from 'lucide-react';
 import { TvRemoteOverlay } from './TvRemoteOverlay';
 
@@ -29,6 +35,8 @@ interface IptvPlayerViewProps {
   onSelectCategory: (category: string) => void;
   onOpenImporter: () => void;
   onToggleFavorite: (channelId: string) => void;
+  currentUser?: UserAccount | null;
+  onOpenAdminPanel?: () => void;
 }
 
 export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
@@ -38,6 +46,8 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
   onSelectCategory,
   onOpenImporter,
   onToggleFavorite,
+  currentUser,
+  onOpenAdminPanel,
 }) => {
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -48,10 +58,13 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [isRemoteOpen, setIsRemoteOpen] = useState<boolean>(false);
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
+  const [showChannelOsd, setShowChannelOsd] = useState<boolean>(false);
+  const [exportNotification, setExportNotification] = useState<{ type: 'success' | 'info'; message: string } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
+  const osdTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Auto-select first channel on mount or channel list update
   useEffect(() => {
@@ -59,6 +72,24 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
       setActiveChannel(channels[0]);
     }
   }, [channels, activeChannel]);
+
+  // Trigger smooth Smart TV OSD banner on channel switch
+  useEffect(() => {
+    if (!activeChannel) return;
+    setShowChannelOsd(true);
+    if (osdTimerRef.current) {
+      clearTimeout(osdTimerRef.current);
+    }
+    osdTimerRef.current = setTimeout(() => {
+      setShowChannelOsd(false);
+    }, 2800);
+
+    return () => {
+      if (osdTimerRef.current) {
+        clearTimeout(osdTimerRef.current);
+      }
+    };
+  }, [activeChannel?.id]);
 
   // Load stream whenever activeChannel changes
   useEffect(() => {
@@ -232,6 +263,64 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
     setFocusedIndex(prevIdx);
   };
 
+  const favoriteChannels = channels.filter((c) => c.isFavorite);
+
+  const handleExportFavorites = () => {
+    if (favoriteChannels.length === 0) {
+      setExportNotification({
+        type: 'info',
+        message: 'Você ainda não possui canais favoritados. Clique na estrela (⭐) de qualquer canal para favoritá-lo e exportar!',
+      });
+      setTimeout(() => setExportNotification(null), 4500);
+      return;
+    }
+
+    const payload = {
+      appName: 'RPR TV FREE',
+      version: '1.0',
+      exportType: 'iptv_favorites_backup',
+      exportedAt: new Date().toISOString(),
+      user: currentUser
+        ? {
+            id: currentUser.id,
+            username: currentUser.username,
+            name: currentUser.name,
+          }
+        : { username: 'usuario_local' },
+      totalFavorites: favoriteChannels.length,
+      channels: favoriteChannels.map((c) => ({
+        id: c.id,
+        name: c.name,
+        streamUrl: c.streamUrl,
+        logoUrl: c.logoUrl || '',
+        groupTitle: c.groupTitle || 'Favoritos',
+        tvgId: c.tvgId || '',
+        tvgName: c.tvgName || '',
+        userAgent: c.userAgent || '',
+        isFavorite: true,
+      })),
+    };
+
+    const jsonString = JSON.stringify(payload, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safeUser = currentUser?.username ? currentUser.username.replace(/[^a-zA-Z0-9_-]/g, '') : 'usuario';
+    const dateStr = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `favoritos_iptv_${safeUser}_${dateStr}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setExportNotification({
+      type: 'success',
+      message: `${favoriteChannels.length} canal(is) favorito(s) exportado(s) com sucesso em formato JSON!`,
+    });
+    setTimeout(() => setExportNotification(null), 5000);
+  };
+
   return (
     <div id="iptv-player-view" className="flex flex-col h-full bg-[#090E1A] text-slate-100 select-none">
       {/* Top Bar / App Header */}
@@ -277,6 +366,45 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
             )}
           </div>
 
+          {/* Painel Administrativo / Revenda */}
+          {onOpenAdminPanel && (currentUser?.role === 'AdminMaster' || currentUser?.role === 'AdminRevenda' || currentUser?.role === 'admin') && (
+            <button
+              id="player-open-admin-panel-btn"
+              onClick={onOpenAdminPanel}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl border shadow-sm transition active:scale-95 cursor-pointer ${
+                currentUser.role === 'AdminRevenda'
+                  ? 'bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/40'
+                  : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
+              }`}
+              title="Acessar painel de gerenciamento de clientes e revendas"
+            >
+              {currentUser.role === 'AdminRevenda' ? (
+                <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+              ) : (
+                <Crown className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span className="hidden sm:inline">
+                {currentUser.role === 'AdminRevenda' ? 'Painel Revenda' : 'Painel Master'}
+              </span>
+              <span className="sm:hidden">Painel</span>
+            </button>
+          )}
+
+          {/* Exportar Favoritos JSON */}
+          <button
+            id="export-favorites-btn"
+            onClick={handleExportFavorites}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 shadow-sm transition active:scale-95 cursor-pointer"
+            title="Exportar canais favoritos em formato JSON para backup ou sincronização futura"
+          >
+            <Download className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline font-semibold">Exportar Favoritos</span>
+            <span className="sm:hidden font-semibold">Favoritos</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-amber-500/25 text-[10px] font-mono font-bold text-amber-300 border border-amber-500/30">
+              {favoriteChannels.length}
+            </span>
+          </button>
+
           {/* Importar M3U */}
           <button
             id="open-importer-btn"
@@ -316,12 +444,19 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
               key={category}
               id={`cat-btn-${category.replace(/[^a-zA-Z0-9]/g, '-')}`}
               onClick={() => onSelectCategory(category)}
-              className={`px-3 py-1 rounded-full text-xs font-medium shrink-0 transition-all ${
+              className={`relative px-3.5 py-1.5 rounded-full text-xs font-medium shrink-0 transition-colors cursor-pointer z-0 ${
                 isSelected
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-semibold'
+                  ? 'text-white font-semibold'
                   : 'bg-slate-800/80 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
               }`}
             >
+              {isSelected && (
+                <motion.div
+                  layoutId="activeCategoryPill"
+                  className="absolute inset-0 bg-blue-600 rounded-full shadow-md shadow-blue-600/30 -z-10"
+                  transition={{ type: 'spring', stiffness: 450, damping: 35 }}
+                />
+              )}
               {category}
             </button>
           );
@@ -351,54 +486,127 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
             />
 
             {/* Buffering Spinner */}
-            {isBuffering && (
-              <div className="absolute inset-0 bg-black/50 backdrop-blur-xs flex flex-col items-center justify-center pointer-events-none z-20">
-                <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                <span className="text-xs text-slate-200 font-medium mt-3 tracking-wide">
-                  Conectando ao Stream HLS...
-                </span>
-              </div>
-            )}
+            <AnimatePresence>
+              {isBuffering && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="absolute inset-0 bg-black/50 backdrop-blur-xs flex flex-col items-center justify-center pointer-events-none z-20"
+                >
+                  <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-xs text-slate-200 font-medium mt-3 tracking-wide">
+                    Conectando ao Stream HLS...
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Error Message Toast / Alert */}
-            {playbackError && (
-              <div className="absolute top-4 left-4 right-4 z-20 bg-rose-950/90 border border-rose-600/50 p-3 rounded-xl flex items-start gap-2.5 text-rose-200 text-xs shadow-lg">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <p className="font-semibold">Aviso de Reprodução Web:</p>
-                  <p className="text-rose-300 mt-0.5">{playbackError}</p>
-                  <p className="text-[10px] text-rose-400 mt-1">
-                    *Nota: No aplicativo nativo Android com o <strong>ExoPlayer</strong> e permissão de rede <code className="bg-rose-900/60 px-1 rounded">usesCleartextTraffic="true"</code>, este fluxo rodará nativamente sem restrições de CORS do navegador.
-                  </p>
-                </div>
-              </div>
-            )}
+            <AnimatePresence>
+              {playbackError && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.2 }}
+                  className="absolute top-4 left-4 right-4 z-20 bg-rose-950/90 border border-rose-600/50 p-3 rounded-xl flex items-start gap-2.5 text-rose-200 text-xs shadow-lg"
+                >
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="font-semibold">Aviso de Reprodução Web:</p>
+                    <p className="text-rose-300 mt-0.5">{playbackError}</p>
+                    <p className="text-[10px] text-rose-400 mt-1">
+                      *Nota: No aplicativo nativo Android com o <strong>ExoPlayer</strong> e permissão de rede <code className="bg-rose-900/60 px-1 rounded">usesCleartextTraffic="true"</code>, este fluxo rodará nativamente sem restrições de CORS do navegador.
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Channel Logo / Watermark Overlay */}
-            {activeChannel && (
-              <div className="absolute top-4 left-4 z-10 flex items-center gap-2.5 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 pointer-events-none">
-                {activeChannel.logoUrl ? (
-                  <img
-                    src={activeChannel.logoUrl}
-                    alt={activeChannel.name}
-                    className="w-7 h-7 object-contain rounded"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                ) : (
-                  <Tv className="w-4 h-4 text-blue-400" />
-                )}
-                <div>
-                  <h2 className="text-xs font-bold text-white leading-tight">
-                    {activeChannel.name}
-                  </h2>
-                  <span className="text-[10px] text-blue-400 font-medium">
-                    {activeChannel.groupTitle || 'Canal Ao Vivo'}
-                  </span>
-                </div>
-              </div>
-            )}
+            <AnimatePresence mode="wait">
+              {activeChannel && (
+                <motion.div
+                  key={activeChannel.id}
+                  initial={{ opacity: 0, y: -12, scale: 0.94 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -8, scale: 0.94 }}
+                  transition={{ duration: 0.25, ease: 'easeOut' }}
+                  className="absolute top-4 left-4 z-10 flex items-center gap-2.5 bg-black/65 backdrop-blur-md px-3.5 py-2 rounded-xl border border-white/10 pointer-events-none shadow-xl"
+                >
+                  {activeChannel.logoUrl ? (
+                    <img
+                      src={activeChannel.logoUrl}
+                      alt={activeChannel.name}
+                      className="w-7 h-7 object-contain rounded"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <Tv className="w-4 h-4 text-blue-400" />
+                  )}
+                  <div>
+                    <h2 className="text-xs font-bold text-white leading-tight">
+                      {activeChannel.name}
+                    </h2>
+                    <span className="text-[10px] text-blue-400 font-medium">
+                      {activeChannel.groupTitle || 'Canal Ao Vivo'}
+                    </span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Channel Switch OSD Banner (Estilo Smart TV) */}
+            <AnimatePresence>
+              {showChannelOsd && activeChannel && (
+                <motion.div
+                  key={`osd-${activeChannel.id}`}
+                  initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 15, scale: 0.96 }}
+                  transition={{ duration: 0.26, ease: 'easeOut' }}
+                  className="absolute bottom-20 left-4 right-4 sm:left-6 sm:right-auto sm:max-w-sm z-30 bg-slate-950/90 backdrop-blur-md border border-blue-500/40 rounded-2xl p-3.5 shadow-2xl pointer-events-none"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 rounded-xl bg-slate-900 border border-slate-700/80 flex items-center justify-center p-1 shrink-0 overflow-hidden shadow-inner">
+                      {activeChannel.logoUrl ? (
+                        <img
+                          src={activeChannel.logoUrl}
+                          alt={activeChannel.name}
+                          className="w-full h-full object-contain"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <Tv className="w-5 h-5 text-blue-400" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                          Sintonizado
+                        </span>
+                        <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          Ao Vivo
+                        </span>
+                      </div>
+                      <h3 className="text-sm font-bold text-white truncate mt-0.5 leading-tight">
+                        {activeChannel.name}
+                      </h3>
+                      <p className="text-[11px] text-slate-400 truncate">
+                        {activeChannel.groupTitle || 'Geral'} • {activeChannel.streamUrl.endsWith('.m3u8') ? 'HLS / M3U8' : 'Stream Direto'}
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* In-Player Media Controls Bar */}
             <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 flex items-center justify-between z-20">
@@ -462,41 +670,50 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
             </div>
           </div>
 
-          {/* Player Metadata & Codec Summary Footer */}
-          {activeChannel && (
-            <div className="p-4 bg-[#0D1526] border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-white text-sm">{activeChannel.name}</span>
-                  <span className="px-2 py-0.5 text-[10px] rounded bg-slate-800 text-slate-300 border border-slate-700">
-                    ID: {activeChannel.id}
-                  </span>
+          {/* Player Metadata & Codec Summary Footer with AnimatePresence */}
+          <AnimatePresence mode="wait">
+            {activeChannel && (
+              <motion.div
+                key={`meta-${activeChannel.id}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2 }}
+                className="p-4 bg-[#0D1526] border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-white text-sm">{activeChannel.name}</span>
+                    <span className="px-2 py-0.5 text-[10px] rounded bg-slate-800 text-slate-300 border border-slate-700">
+                      ID: {activeChannel.id}
+                    </span>
+                  </div>
+                  <div className="text-slate-400 font-mono text-[11px] truncate max-w-md">
+                    URL: {activeChannel.streamUrl}
+                  </div>
                 </div>
-                <div className="text-slate-400 font-mono text-[11px] truncate max-w-md">
-                  URL: {activeChannel.streamUrl}
-                </div>
-              </div>
 
-              <div className="flex items-center gap-3 text-slate-300">
-                <div className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className="font-mono text-[11px]">Ao Vivo (HLS / M3U8)</span>
+                <div className="flex items-center gap-3 text-slate-300">
+                  <div className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="font-mono text-[11px]">Ao Vivo (HLS / M3U8)</span>
+                  </div>
+                  <button
+                    id="fav-btn-player"
+                    onClick={() => onToggleFavorite(activeChannel.id)}
+                    className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                      activeChannel.isFavorite
+                        ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Adicionar aos Favoritos"
+                  >
+                    <Star className={`w-4 h-4 ${activeChannel.isFavorite ? 'fill-amber-400' : ''}`} />
+                  </button>
                 </div>
-                <button
-                  id="fav-btn-player"
-                  onClick={() => onToggleFavorite(activeChannel.id)}
-                  className={`p-1.5 rounded-lg border transition ${
-                    activeChannel.isFavorite
-                      ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
-                      : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
-                  }`}
-                  title="Adicionar aos Favoritos"
-                >
-                  <Star className={`w-4 h-4 ${activeChannel.isFavorite ? 'fill-amber-400' : ''}`} />
-                </button>
-              </div>
-            </div>
-          )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Right Side: Channel List (RecyclerView Simulation) */}
@@ -512,6 +729,27 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
               Otimizado para D-Pad / Touch
             </span>
           </div>
+
+          {/* Destaque quando a categoria Favoritos está ativa */}
+          {selectedCategory === 'FAVORITOS' && (
+            <div className="px-3 py-2 bg-amber-950/40 border-b border-amber-500/30 flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-1.5 text-amber-200">
+                <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                <span className="font-semibold text-[11px] sm:text-xs">
+                  {favoriteChannels.length} canal(is) favorito(s)
+                </span>
+              </div>
+              <button
+                id="export-favorites-banner-btn"
+                onClick={handleExportFavorites}
+                className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 transition shadow-sm active:scale-95 cursor-pointer"
+                title="Baixar arquivo JSON com os canais favoritos"
+              >
+                <Download className="w-3 h-3 text-slate-950" />
+                <span>Exportar JSON</span>
+              </button>
+            </div>
+          )}
 
           {/* Barra de Pesquisa em Tempo Real dedicada na Lista de Canais */}
           <div className="p-2.5 bg-[#0E1528] border-b border-slate-800/80">
@@ -529,7 +767,7 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
                 <button
                   id="clear-channel-list-search-btn"
                   onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/60 transition"
+                  className="absolute right-2.5 p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/60 transition cursor-pointer"
                   title="Limpar filtro"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -546,7 +784,7 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
                 {selectedCategory !== 'TODOS' && (
                   <button
                     onClick={() => onSelectCategory('TODOS')}
-                    className="text-blue-400 hover:text-blue-300 underline text-[10px]"
+                    className="text-blue-400 hover:text-blue-300 underline text-[10px] cursor-pointer"
                   >
                     Buscar em todos
                   </button>
@@ -555,102 +793,205 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-2.5 custom-scrollbar">
-            {filteredChannels.length === 0 ? (
-              <div className="col-span-full py-16 text-center text-slate-400 space-y-2">
-                <Radio className="w-8 h-8 text-slate-500 mx-auto" />
-                <p className="text-sm font-medium">Nenhum canal encontrado.</p>
-                <p className="text-xs text-slate-500">
-                  {searchQuery
-                    ? `Nenhum canal com o nome "${searchQuery}" nesta categoria.`
-                    : 'Tente selecionar outra categoria ou importar uma nova lista.'}
-                </p>
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery('')}
-                    className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/40 hover:bg-blue-600/30 transition"
-                  >
-                    <X className="w-3 h-3" />
-                    <span>Limpar busca</span>
-                  </button>
-                )}
-              </div>
-            ) : (
-              filteredChannels.map((channel, index) => {
-                const isSelected = activeChannel?.id === channel.id;
-                const isFocused = focusedIndex === index;
+          <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+            <AnimatePresence mode="wait">
+              {filteredChannels.length === 0 ? (
+                <motion.div
+                  key="empty-channels"
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.2 }}
+                  className="col-span-full py-14 text-center text-slate-400 space-y-2.5 px-4"
+                >
+                  {selectedCategory === 'FAVORITOS' ? (
+                    <>
+                      <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto text-amber-400">
+                        <Star className="w-6 h-6 fill-amber-400/25" />
+                      </div>
+                      <p className="text-sm font-bold text-slate-200">Nenhum canal favorito ainda</p>
+                      <p className="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
+                        Clique na estrela (⭐) no canal para adicioná-lo aos seus favoritos. Você poderá exportar seu backup em JSON quando quiser!
+                      </p>
+                      <button
+                        onClick={() => onSelectCategory('TODOS')}
+                        className="inline-flex items-center gap-1.5 mt-2 px-3.5 py-1.5 text-xs rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition cursor-pointer shadow-md shadow-blue-600/20"
+                      >
+                        <span>Explorar Canais</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <Radio className="w-8 h-8 text-slate-500 mx-auto" />
+                      <p className="text-sm font-medium">Nenhum canal encontrado.</p>
+                      <p className="text-xs text-slate-500">
+                        {searchQuery
+                          ? `Nenhum canal com o nome "${searchQuery}" nesta categoria.`
+                          : 'Tente selecionar outra categoria ou importar uma nova lista.'}
+                      </p>
+                      {searchQuery && (
+                        <button
+                          onClick={() => setSearchQuery('')}
+                          className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/40 hover:bg-blue-600/30 transition cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                          <span>Limpar busca</span>
+                        </button>
+                      )}
+                    </>
+                  )}
+                </motion.div>
+              ) : (
+                <motion.div
+                  key={`grid-${selectedCategory}-${searchQuery}`}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.22, ease: 'easeOut' }}
+                  className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-2.5"
+                >
+                  {filteredChannels.map((channel, index) => {
+                    const isSelected = activeChannel?.id === channel.id;
+                    const isFocused = focusedIndex === index;
 
-                return (
-                  <div
-                    key={channel.id}
-                    id={`channel-card-${channel.id}`}
-                    onClick={() => {
-                      setActiveChannel(channel);
-                      setFocusedIndex(index);
-                    }}
-                    className={`group relative p-3 rounded-xl border text-left cursor-pointer transition-all ${
-                      isSelected
-                        ? 'bg-blue-600/20 border-blue-500/70 shadow-lg shadow-blue-500/10'
-                        : isFocused
-                        ? 'bg-slate-800/90 border-blue-400 ring-2 ring-blue-500/50'
-                        : 'bg-[#131C31] hover:bg-[#18233C] border-slate-800/80'
-                    }`}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="w-12 h-12 rounded-lg bg-slate-900 border border-slate-700/60 flex items-center justify-center p-1 shrink-0 overflow-hidden">
-                        {channel.logoUrl ? (
-                          <img
-                            src={channel.logoUrl}
-                            alt={channel.name}
-                            className="w-full h-full object-contain"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).src =
-                                'https://placehold.co/100x100/1e293b/94a3b8?text=TV';
-                            }}
+                    return (
+                      <motion.div
+                        key={channel.id}
+                        id={`channel-card-${channel.id}`}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2, delay: Math.min(index * 0.015, 0.25) }}
+                        whileHover={{ scale: 1.015 }}
+                        whileTap={{ scale: 0.985 }}
+                        onClick={() => {
+                          setActiveChannel(channel);
+                          setFocusedIndex(index);
+                        }}
+                        className={`group relative p-3 rounded-xl border text-left cursor-pointer transition-all ${
+                          isSelected
+                            ? 'bg-blue-600/20 border-blue-500/70 shadow-lg shadow-blue-500/10 ring-1 ring-blue-500/40'
+                            : isFocused
+                            ? 'bg-slate-800/90 border-blue-400 ring-2 ring-blue-500/50'
+                            : 'bg-[#131C31] hover:bg-[#18233C] border-slate-800/80'
+                        }`}
+                      >
+                        {/* Active Selection Glow Pill */}
+                        {isSelected && (
+                          <motion.div
+                            layoutId="activeChannelGlow"
+                            className="absolute -left-0.5 top-2.5 bottom-2.5 w-1 bg-blue-500 rounded-r shadow-sm shadow-blue-400"
+                            transition={{ type: 'spring', stiffness: 450, damping: 35 }}
                           />
-                        ) : (
-                          <Tv className="w-6 h-6 text-slate-500" />
                         )}
-                      </div>
 
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1">
-                          <h3
-                            className={`text-xs font-bold truncate ${
-                              isSelected ? 'text-blue-300' : 'text-slate-100'
-                            }`}
-                          >
-                            {channel.name}
-                          </h3>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggleFavorite(channel.id);
-                            }}
-                            className="text-slate-500 hover:text-amber-400 p-0.5 transition"
-                          >
-                            <Star
-                              className={`w-3.5 h-3.5 ${
-                                channel.isFavorite ? 'fill-amber-400 text-amber-400' : ''
-                              }`}
-                            />
-                          </button>
+                        <div className="flex items-start gap-3">
+                          <div className="w-12 h-12 rounded-lg bg-slate-900 border border-slate-700/60 flex items-center justify-center p-1 shrink-0 overflow-hidden relative">
+                            {channel.logoUrl ? (
+                              <img
+                                src={channel.logoUrl}
+                                alt={channel.name}
+                                className="w-full h-full object-contain"
+                                onError={(e) => {
+                                  (e.target as HTMLImageElement).src =
+                                    'https://placehold.co/100x100/1e293b/94a3b8?text=TV';
+                                }}
+                              />
+                            ) : (
+                              <Tv className="w-6 h-6 text-slate-500" />
+                            )}
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <h3
+                                className={`text-xs font-bold truncate ${
+                                  isSelected ? 'text-blue-300' : 'text-slate-100'
+                                }`}
+                              >
+                                {channel.name}
+                              </h3>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onToggleFavorite(channel.id);
+                                }}
+                                className="text-slate-500 hover:text-amber-400 p-0.5 transition cursor-pointer"
+                              >
+                                <Star
+                                  className={`w-3.5 h-3.5 ${
+                                    channel.isFavorite ? 'fill-amber-400 text-amber-400' : ''
+                                  }`}
+                                />
+                              </button>
+                            </div>
+                            <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                              {channel.groupTitle || 'Geral'}
+                            </p>
+                            <div className="flex items-center justify-between mt-1">
+                              <span className="inline-block text-[9px] font-mono text-slate-400 uppercase">
+                                {channel.streamUrl.endsWith('.m3u8') ? 'HLS' : 'Stream'}
+                              </span>
+                              {isSelected && (
+                                <span className="flex items-center gap-1 text-[9px] font-bold text-blue-400">
+                                  <span className="flex items-end gap-0.5 h-2.5">
+                                    <span className="w-0.5 h-full bg-blue-400 rounded-full animate-pulse" />
+                                    <span className="w-0.5 h-2/3 bg-blue-400 rounded-full animate-pulse delay-75" />
+                                    <span className="w-0.5 h-4/5 bg-blue-400 rounded-full animate-pulse delay-150" />
+                                  </span>
+                                  <span>TOCANDO</span>
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                          {channel.groupTitle || 'Geral'}
-                        </p>
-                        <span className="inline-block text-[9px] font-mono text-slate-400 mt-1 uppercase">
-                          {channel.streamUrl.endsWith('.m3u8') ? 'HLS' : 'Stream'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
+                      </motion.div>
+                    );
+                  })}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </div>
+
+      {/* Notification Toast for Favorites Export / Feedback */}
+      <AnimatePresence>
+        {exportNotification && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            transition={{ duration: 0.2 }}
+            className={`fixed top-16 right-5 z-50 max-w-sm sm:max-w-md p-3.5 rounded-2xl border shadow-2xl backdrop-blur-md flex items-start gap-3 text-xs ${
+              exportNotification.type === 'success'
+                ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200'
+                : 'bg-amber-950/90 border-amber-500/50 text-amber-200'
+            }`}
+          >
+            {exportNotification.type === 'success' ? (
+              <div className="w-6 h-6 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+              </div>
+            ) : (
+              <div className="w-6 h-6 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-white text-xs">
+                {exportNotification.type === 'success' ? 'Backup JSON Criado com Sucesso!' : 'Aviso de Favoritos'}
+              </p>
+              <p className="text-[11px] opacity-90 mt-0.5 leading-relaxed">{exportNotification.message}</p>
+            </div>
+            <button
+              onClick={() => setExportNotification(null)}
+              className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Floating Interactive TV Remote Overlay */}
       <TvRemoteOverlay

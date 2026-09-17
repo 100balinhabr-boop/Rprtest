@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { SAMPLE_PLAYLISTS } from '../data/samplePlaylists';
 import { parseM3U } from '../utils/m3uParserWeb';
-import { Channel } from '../types';
+import { Channel, UserAccount } from '../types';
 import { 
   X, 
   Globe, 
@@ -10,31 +10,104 @@ import {
   Sparkles, 
   Check, 
   AlertCircle,
-  Play
+  Play,
+  Save,
+  Trash2,
+  Tv
 } from 'lucide-react';
 
 interface PlaylistImporterModalProps {
   isOpen: boolean;
   onClose: () => void;
   onPlaylistLoaded: (channels: Channel[], groups: string[]) => void;
+  currentUser?: UserAccount | null;
+  onUserUpdated?: (updatedUser: UserAccount) => void;
 }
 
 export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
   isOpen,
   onClose,
   onPlaylistLoaded,
+  currentUser,
+  onUserUpdated,
 }) => {
   const [activeTab, setActiveTab] = useState<'sample' | 'url' | 'xtream' | 'file' | 'paste'>('url');
-  const [urlInput, setUrlInput] = useState<string>('http://fsnovinho.shop/get.php?username=22612577&password=37417145&type=m3u_plus&output=ts');
+  const [urlInput, setUrlInput] = useState<string>(currentUser?.playlistUrl || 'http://fsnovinho.shop/get.php?username=22612577&password=37417145&type=m3u_plus&output=ts');
+  const [playlistNameInput, setPlaylistNameInput] = useState<string>(currentUser?.playlistName || 'Minha Lista IPTV');
+  const [saveToAccount, setSaveToAccount] = useState<boolean>(true);
   const [pasteInput, setPasteInput] = useState<string>('');
   const [xtreamServer, setXtreamServer] = useState<string>('http://fsnovinho.shop');
   const [xtreamUser, setXtreamUser] = useState<string>('22612577');
   const [xtreamPass, setXtreamPass] = useState<string>('37417145');
+  const [loadMode, setLoadMode] = useState<'all' | 'live'>('live');
+  const [maxLimit, setMaxLimit] = useState<number>(2000); // 2000 = Padrão rápido e fluido sem travamentos
   const [loading, setLoading] = useState<boolean>(false);
+  const [isRemovingSaved, setIsRemovingSaved] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (currentUser?.playlistUrl) {
+      setUrlInput(currentUser.playlistUrl);
+    }
+    if (currentUser?.playlistName) {
+      setPlaylistNameInput(currentUser.playlistName);
+    }
+  }, [currentUser]);
+
   if (!isOpen) return null;
+
+  const savePlaylistToServer = async (targetUrl: string, name?: string) => {
+    if (!currentUser) return null;
+    const token = localStorage.getItem('iptv_auth_token') || sessionStorage.getItem('iptv_auth_token');
+    if (!token) return null;
+
+    try {
+      const res = await fetch('/api/user/playlist', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          playlistUrl: targetUrl,
+          playlistName: name || playlistNameInput || 'Minha Lista IPTV',
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.user) {
+        if (onUserUpdated) onUserUpdated(data.user);
+        return data.user;
+      }
+    } catch (err) {
+      console.error('Erro ao salvar lista no servidor:', err);
+    }
+    return null;
+  };
+
+  const handleRemoveSavedPlaylist = async () => {
+    if (!currentUser) return;
+    const token = localStorage.getItem('iptv_auth_token') || sessionStorage.getItem('iptv_auth_token');
+    if (!token) return;
+
+    setIsRemovingSaved(true);
+    setErrorMessage(null);
+    try {
+      const res = await fetch('/api/user/playlist', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (data.success && data.user && onUserUpdated) {
+        onUserUpdated(data.user);
+        setSuccessMessage('Lista desvinculada da sua conta com sucesso.');
+      }
+    } catch (err: any) {
+      setErrorMessage('Erro ao desvincular lista: ' + err.message);
+    } finally {
+      setIsRemovingSaved(false);
+    }
+  };
 
   const handleLoadSample = (rawM3u: string) => {
     try {
@@ -66,7 +139,8 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
         },
         body: JSON.stringify({
           url: targetUrl,
-          maxChannels: 3000,
+          maxChannels: maxLimit, // 0 = Sem limites / Carregar lista inteira
+          mode: loadMode, // 'all' (TV + Filmes + Séries) ou 'live' (Apenas TV)
           preferFormat: 'm3u8'
         })
       });
@@ -84,11 +158,20 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
         ? data.groups.map((g: any) => (typeof g === 'string' ? g : g.name))
         : Array.from(new Set(data.channels.map((c: any) => c.groupTitle || 'Geral')));
 
-      setSuccessMessage(data.message || `Sucesso! ${data.channels.length} canais carregados.`);
+      // Se solicitado, salva a lista vinculada ao usuário no backend
+      if (saveToAccount && currentUser) {
+        await savePlaylistToServer(targetUrl, playlistNameInput);
+        setSuccessMessage(
+          `Sucesso! ${data.channels.length} canais carregados e lista salva na conta de @${currentUser.username}!`
+        );
+      } else {
+        setSuccessMessage(data.message || `Sucesso! ${data.channels.length} canais carregados.`);
+      }
+
       setTimeout(() => {
         onPlaylistLoaded(data.channels, groupNames as string[]);
         onClose();
-      }, 400);
+      }, 500);
     } catch (err: any) {
       setErrorMessage(
         `Erro ao processar lista: ${err.message}`
@@ -119,7 +202,47 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const text = event.target?.result as string;
+        const text = (event.target?.result as string || '').trim();
+        
+        // Verifica se é um arquivo JSON de backup de favoritos ou canais
+        if (file.name.toLowerCase().endsWith('.json') || text.startsWith('{') || text.startsWith('[')) {
+          const parsed = JSON.parse(text);
+          const rawChannels = Array.isArray(parsed.channels)
+            ? parsed.channels
+            : Array.isArray(parsed.favorites)
+            ? parsed.favorites
+            : Array.isArray(parsed)
+            ? parsed
+            : null;
+
+          if (!rawChannels || rawChannels.length === 0) {
+            throw new Error('O arquivo JSON não contém uma lista válida de canais ou favoritos.');
+          }
+
+          const channels: Channel[] = rawChannels
+            .map((item: any, idx: number) => ({
+              id: String(item.id || `json_ch_${idx}_${Date.now()}`),
+              name: String(item.name || item.tvgName || `Canal ${idx + 1}`),
+              streamUrl: String(item.streamUrl || item.url || ''),
+              logoUrl: item.logoUrl || item.logo || '',
+              groupTitle: item.groupTitle || item.group || 'Favoritos',
+              tvgId: item.tvgId || '',
+              tvgName: item.tvgName || '',
+              userAgent: item.userAgent || '',
+              isFavorite: item.isFavorite !== undefined ? Boolean(item.isFavorite) : true,
+            }))
+            .filter((c) => Boolean(c.streamUrl));
+
+          if (channels.length === 0) {
+            throw new Error('Nenhum canal com URL de stream válida foi encontrado no arquivo JSON.');
+          }
+
+          const groups = Array.from(new Set(channels.map((c) => c.groupTitle || 'Favoritos')));
+          onPlaylistLoaded(channels, groups);
+          onClose();
+          return;
+        }
+
         const { channels, groups } = parseM3U(text);
         if (channels.length === 0) {
           throw new Error('O arquivo selecionado não contém streams ou tags M3U válidas.');
@@ -140,13 +263,52 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
   };
 
   const handleParsePaste = () => {
-    if (!pasteInput.trim()) {
-      setErrorMessage('Cole o conteúdo da lista M3U no campo de texto.');
+    const trimmed = pasteInput.trim();
+    if (!trimmed) {
+      setErrorMessage('Cole o conteúdo da lista M3U ou JSON de backup no campo de texto.');
       return;
     }
 
     try {
-      const { channels, groups } = parseM3U(pasteInput);
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        const parsed = JSON.parse(trimmed);
+        const rawChannels = Array.isArray(parsed.channels)
+          ? parsed.channels
+          : Array.isArray(parsed.favorites)
+          ? parsed.favorites
+          : Array.isArray(parsed)
+          ? parsed
+          : null;
+
+        if (!rawChannels || rawChannels.length === 0) {
+          throw new Error('O texto JSON colado não contém uma lista válida de canais.');
+        }
+
+        const channels: Channel[] = rawChannels
+          .map((item: any, idx: number) => ({
+            id: String(item.id || `json_paste_${idx}_${Date.now()}`),
+            name: String(item.name || item.tvgName || `Canal ${idx + 1}`),
+            streamUrl: String(item.streamUrl || item.url || ''),
+            logoUrl: item.logoUrl || item.logo || '',
+            groupTitle: item.groupTitle || item.group || 'Favoritos',
+            tvgId: item.tvgId || '',
+            tvgName: item.tvgName || '',
+            userAgent: item.userAgent || '',
+            isFavorite: item.isFavorite !== undefined ? Boolean(item.isFavorite) : true,
+          }))
+          .filter((c) => Boolean(c.streamUrl));
+
+        if (channels.length === 0) {
+          throw new Error('Nenhum canal com URL válida encontrado no JSON colado.');
+        }
+
+        const groups = Array.from(new Set(channels.map((c) => c.groupTitle || 'Favoritos')));
+        onPlaylistLoaded(channels, groups);
+        onClose();
+        return;
+      }
+
+      const { channels, groups } = parseM3U(trimmed);
       if (channels.length === 0) {
         throw new Error('Nenhum canal foi detectado no texto colado.');
       }
@@ -246,6 +408,52 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
 
         {/* Tab Contents */}
         <div className="p-5 space-y-4">
+          {/* User Linked Playlist Banner */}
+          {currentUser && currentUser.playlistUrl && (
+            <div className="p-3 bg-blue-950/40 border border-blue-600/40 rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-blue-600/30 text-blue-400 flex items-center justify-center shrink-0">
+                    <Tv className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-bold text-white">
+                        {currentUser.playlistName || 'Minha Lista Salva'}
+                      </span>
+                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded border border-emerald-500/30">
+                        Salva na sua conta
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 truncate max-w-sm font-mono">
+                      {currentUser.playlistUrl}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => handleFetchUrl(currentUser.playlistUrl)}
+                    disabled={loading}
+                    className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold flex items-center gap-1 transition"
+                  >
+                    <Play className="w-3 h-3 fill-white" />
+                    <span>Carregar</span>
+                  </button>
+
+                  <button
+                    onClick={handleRemoveSavedPlaylist}
+                    disabled={isRemovingSaved}
+                    className="p-1 rounded-lg bg-slate-800 hover:bg-rose-900/40 text-slate-400 hover:text-rose-300 border border-slate-700 transition"
+                    title="Desvincular lista desta conta"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {errorMessage && (
             <div className="p-3 bg-rose-950/80 border border-rose-600/50 rounded-xl flex items-start gap-2 text-xs text-rose-300">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -280,10 +488,127 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
                 className="w-full bg-[#0A0F1D] border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono"
               />
 
-              <div className="p-2.5 bg-blue-950/40 border border-blue-800/40 rounded-xl text-[11px] text-blue-300 flex items-start gap-2">
-                <Sparkles className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+              {currentUser && (
+                <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl space-y-2.5">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={saveToAccount}
+                      onChange={(e) => setSaveToAccount(e.target.checked)}
+                      className="mt-0.5 rounded text-blue-600 focus:ring-blue-500 bg-slate-800 border-slate-700"
+                    />
+                    <div className="text-[11px] leading-tight">
+                      <span className="font-semibold text-white">
+                        Salvar e vincular esta lista à minha conta (@{currentUser.username})
+                      </span>
+                      <p className="text-slate-400 mt-0.5">
+                        Toda vez que você fizer login com seu usuário e senha, essa lista será carregada automaticamente!
+                      </p>
+                    </div>
+                  </label>
+
+                  {saveToAccount && (
+                    <div>
+                      <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                        Nome da Lista (opcional)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ex: Minha Lista IPTV HD"
+                        value={playlistNameInput}
+                        onChange={(e) => setPlaylistNameInput(e.target.value)}
+                        className="w-full bg-[#0A0F1D] border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Opções de Carregamento da Lista */}
+              <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    Opções de Importação da Lista
+                  </span>
+                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                    {maxLimit === 0 ? '⚡ Lista Inteira (Sem Cortes)' : `Até ${maxLimit.toLocaleString()} itens`}
+                  </span>
+                </div>
+
+                {/* Modo: Completo vs Ao Vivo */}
                 <div>
-                  <strong>Detecção Inteligente:</strong> Para listas gigantes como a sua (387 mil itens), nosso backend processa apenas os <strong>1.453 canais de TV ao vivo</strong> sem travar o navegador nem estourar memória.
+                  <label className="text-[11px] font-semibold text-slate-300 block mb-1.5">
+                    O que deseja carregar?
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setLoadMode('all')}
+                      className={`p-2 rounded-xl text-left border transition cursor-pointer ${
+                        loadMode === 'all'
+                          ? 'bg-blue-600/20 border-blue-500 text-white'
+                          : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <div className="font-bold text-xs flex items-center gap-1 text-blue-400">
+                        <span>🌟 Lista Completa</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">
+                        TV ao Vivo + Filmes VOD + Séries completos.
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setLoadMode('live')}
+                      className={`p-2 rounded-xl text-left border transition cursor-pointer ${
+                        loadMode === 'live'
+                          ? 'bg-blue-600/20 border-blue-500 text-white'
+                          : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <div className="font-bold text-xs flex items-center gap-1 text-emerald-400">
+                        <span>📺 Apenas TV ao Vivo</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">
+                        Canais de TV rápidos e leves.
+                      </p>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Limite de canais */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-[11px] font-semibold text-slate-300">
+                      Limite de Conteúdo:
+                    </label>
+                    <span className="text-[10px] font-bold text-emerald-400">
+                      {maxLimit === 0 ? '✓ Sem Limite (Lista Inteira)' : `${maxLimit.toLocaleString()} itens`}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {[
+                      { label: 'Sem Limite', value: 0 },
+                      { label: '50.000', value: 50000 },
+                      { label: '20.000', value: 20000 },
+                      { label: '5.000', value: 5000 },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setMaxLimit(opt.value)}
+                        className={`py-1.5 px-2 rounded-lg text-xs font-semibold border transition text-center cursor-pointer ${
+                          maxLimit === opt.value
+                            ? 'bg-blue-600 text-white border-blue-400 shadow-sm'
+                            : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -296,12 +621,12 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
                 {loading ? (
                   <>
                     <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Conectando e Processando Canais de TV...</span>
+                    <span>Processando e Carregando Mídias...</span>
                   </>
                 ) : (
                   <>
                     <Check className="w-4 h-4" />
-                    <span>Processar Lista por URL</span>
+                    <span>Processar e {saveToAccount && currentUser ? 'Salvar Lista' : 'Carregar Canais'}</span>
                   </>
                 )}
               </button>
@@ -345,6 +670,98 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
                 </div>
               </div>
 
+              {/* Opções de Carregamento Xtream */}
+              <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                    Opções de Importação Xtream
+                  </span>
+                  <span className="text-[10px] font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                    {maxLimit === 0 ? '⚡ Lista Inteira (Sem Cortes)' : `Até ${maxLimit.toLocaleString()} itens`}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setLoadMode('all')}
+                    className={`p-2 rounded-xl text-left border transition cursor-pointer ${
+                      loadMode === 'all'
+                        ? 'bg-indigo-600/20 border-indigo-500 text-white'
+                        : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="font-bold text-xs flex items-center gap-1 text-indigo-400">
+                      <span>🌟 Lista Completa</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">
+                      TV + Filmes VOD + Séries.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setLoadMode('live')}
+                    className={`p-2 rounded-xl text-left border transition cursor-pointer ${
+                      loadMode === 'live'
+                        ? 'bg-indigo-600/20 border-indigo-500 text-white'
+                        : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="font-bold text-xs flex items-center gap-1 text-emerald-400">
+                      <span>📺 Apenas TV ao Vivo</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">
+                      Canais rápidos da API Xtream.
+                    </p>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[
+                    { label: 'Sem Limite', value: 0 },
+                    { label: '50.000', value: 50000 },
+                    { label: '20.000', value: 20000 },
+                    { label: '5.000', value: 5000 },
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setMaxLimit(opt.value)}
+                      className={`py-1 px-1.5 rounded-lg text-xs font-semibold border transition text-center cursor-pointer ${
+                        maxLimit === opt.value
+                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
+                          : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {currentUser && (
+                <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl space-y-2">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={saveToAccount}
+                      onChange={(e) => setSaveToAccount(e.target.checked)}
+                      className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500 bg-slate-800 border-slate-700"
+                    />
+                    <div className="text-[11px] leading-tight">
+                      <span className="font-semibold text-white">
+                        Salvar e vincular esta lista Xtream à minha conta (@{currentUser.username})
+                      </span>
+                      <p className="text-slate-400 mt-0.5">
+                        Toda vez que você fizer login, essa lista será aberta automaticamente.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              )}
+
               <button
                 onClick={handleXtreamLogin}
                 disabled={loading}
@@ -358,7 +775,7 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    <span>Conectar e Carregar 1.453 Canais</span>
+                    <span>Conectar e {saveToAccount && currentUser ? 'Salvar Lista na Conta' : 'Carregar Canais'}</span>
                   </>
                 )}
               </button>
@@ -394,7 +811,7 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
           {activeTab === 'file' && (
             <div className="space-y-3">
               <label className="text-xs font-medium text-slate-300 block">
-                Selecione um arquivo local (.m3u ou .m3u8):
+                Selecione um arquivo local (.m3u, .m3u8 ou backup .json):
               </label>
               <div className="border-2 border-dashed border-slate-700 hover:border-blue-500 rounded-xl p-6 text-center bg-slate-900/50 transition">
                 <Upload className="w-8 h-8 text-blue-400 mx-auto mb-2" />
@@ -402,13 +819,13 @@ export const PlaylistImporterModal: React.FC<PlaylistImporterModalProps> = ({
                   <span>Clique para selecionar o arquivo</span>
                   <input
                     type="file"
-                    accept=".m3u,.m3u8,.txt"
+                    accept=".m3u,.m3u8,.txt,.json"
                     onChange={handleFileUpload}
                     className="hidden"
                   />
                 </label>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Suporta arquivos grandes (equivalente ao Intent SAF OpenDocument no Android).
+                  Suporta listas M3U/M3U8 e backups de canais favoritos em formato JSON para restauração instantânea.
                 </p>
               </div>
             </div>

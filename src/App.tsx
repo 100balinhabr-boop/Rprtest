@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Channel, ViewMode, UserAccount } from './types';
 import { SAMPLE_PLAYLISTS } from './data/samplePlaylists';
 import { parseM3U } from './utils/m3uParserWeb';
@@ -8,6 +8,7 @@ import { ArchitectureDoc } from './components/ArchitectureDoc';
 import { PlaylistImporterModal } from './components/PlaylistImporterModal';
 import { AuthScreen } from './components/AuthScreen';
 import { AdminUsersModal } from './components/AdminUsersModal';
+import { ClientPortalView } from './components/ClientPortalView';
 import { 
   Play, 
   Code2, 
@@ -20,9 +21,14 @@ import {
   LogOut,
   User as UserIcon,
   Users as UsersIcon,
-  ShieldCheck
+  ShieldCheck,
+  AlertCircle,
+  X,
+  Crown,
+  Briefcase
 } from 'lucide-react';
 import { ANDROID_FILES } from './data/androidProjectFiles';
+import { normalizeUserRole } from './components/AdminUsersModal';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
@@ -35,6 +41,17 @@ export default function App() {
   });
   const [isVerifyingAuth, setIsVerifyingAuth] = useState<boolean>(true);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
+  // Modo de visualização: 'studio' (Admin Master com códigos e arquitetura) ou 'client' (Portal do Cliente Final)
+  const [appViewMode, setAppViewMode] = useState<'studio' | 'client'>(() => {
+    const saved = localStorage.getItem('iptv_app_view_mode');
+    if (saved === 'client' || saved === 'studio') return saved;
+    return 'studio'; // Padrão no Studio de Desenvolvimento
+  });
+
+  const isMasterOrRevenda = (role?: string) => {
+    const norm = normalizeUserRole(role);
+    return norm === 'AdminMaster' || norm === 'AdminRevenda';
+  };
 
   const [viewMode, setViewMode] = useState<ViewMode>('player');
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -42,6 +59,8 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState<string>('TODOS');
   const [isImporterOpen, setIsImporterOpen] = useState<boolean>(false);
   const [copiedAll, setCopiedAll] = useState<boolean>(false);
+  const [autoLoadNotice, setAutoLoadNotice] = useState<{ type: 'loading' | 'success' | 'error'; message: string } | null>(null);
+  const loadedUserPlaylistRef = useRef<string | null>(null);
 
   // Verifica a sessão atual com o backend na inicialização
   useEffect(() => {
@@ -75,23 +94,119 @@ export default function App() {
       });
   }, []);
 
-  // Inicializa com a lista demonstrativa legal de canais HLS
+  // Inicializa com a lista demonstrativa legal de canais HLS se nenhuma lista foi carregada ainda
+  const getSavedFavoriteIds = (userId?: string): string[] => {
+    try {
+      const userKey = userId || currentUser?.id || 'guest';
+      const raw = localStorage.getItem(`iptv_fav_ids_${userKey}`);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const applyFavorites = (chList: Channel[], userId?: string): Channel[] => {
+    const favIds = new Set(getSavedFavoriteIds(userId));
+    return chList.map((c) => ({
+      ...c,
+      isFavorite: c.isFavorite || favIds.has(c.id) || favIds.has(c.streamUrl),
+    }));
+  };
+
   useEffect(() => {
-    const { channels: parsedChannels, groups } = parseM3U(SAMPLE_PLAYLISTS[0].rawM3u);
-    setChannels(parsedChannels);
-    setCategories(['TODOS', 'FAVORITOS', ...groups]);
+    if (channels.length === 0) {
+      const { channels: parsedChannels, groups } = parseM3U(SAMPLE_PLAYLISTS[0].rawM3u);
+      setChannels(applyFavorites(parsedChannels));
+      setCategories(['TODOS', 'FAVORITOS', ...groups]);
+    }
   }, []);
 
+  // Re-aplica os favoritos salvos do usuário caso faça login ou troque de conta
+  useEffect(() => {
+    if (channels.length > 0 && currentUser) {
+      setChannels((prev) => applyFavorites(prev, currentUser.id));
+    }
+  }, [currentUser?.id]);
+
+  // Carregamento automático da lista M3U salva do usuário logado
+  useEffect(() => {
+    if (!currentUser || !currentUser.playlistUrl) return;
+
+    const playlistKey = `${currentUser.id}:${currentUser.playlistUrl}`;
+    if (loadedUserPlaylistRef.current === playlistKey) {
+      return;
+    }
+
+    const loadUserSavedPlaylist = async () => {
+      loadedUserPlaylistRef.current = playlistKey;
+      setAutoLoadNotice({
+        type: 'loading',
+        message: `Restaurando lista salva "${currentUser.playlistName || 'Minha Lista IPTV'}" de @${currentUser.username}...`,
+      });
+
+      try {
+        const res = await fetch('/api/load-playlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: currentUser.playlistUrl,
+            maxChannels: 2000, // Limite seguro para abertura instantânea (1-2s) sem travar
+            mode: 'live', // Foco em canais de TV ao vivo leves e rápidos
+            preferFormat: 'm3u8',
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success || !data.channels || data.channels.length === 0) {
+          throw new Error(data.error || 'Nenhum canal foi retornado do link salvo.');
+        }
+
+        const groupNames = Array.isArray(data.groups)
+          ? data.groups.map((g: any) => (typeof g === 'string' ? g : g.name))
+          : Array.from(new Set(data.channels.map((c: any) => c.groupTitle || 'Geral')));
+
+        setChannels(applyFavorites(data.channels, currentUser.id));
+        setCategories(['TODOS', 'FAVORITOS', ...groupNames]);
+        setSelectedCategory('TODOS');
+        setAutoLoadNotice({
+          type: 'success',
+          message: data.message || `Sua lista "${currentUser.playlistName || 'Minha Lista IPTV'}" foi carregada com sucesso (${data.channels.length} canais e mídias)!`,
+        });
+
+        setTimeout(() => {
+          setAutoLoadNotice(null);
+        }, 5000);
+      } catch (err: any) {
+        console.warn('Falha no auto-load da lista salva:', err);
+        setAutoLoadNotice({
+          type: 'error',
+          message: `Não foi possível carregar a lista salva automaticamente: ${err.message}`,
+        });
+        setTimeout(() => {
+          setAutoLoadNotice(null);
+        }, 6000);
+      }
+    };
+
+    loadUserSavedPlaylist();
+  }, [currentUser]);
+
   const handlePlaylistLoaded = (newChannels: Channel[], newGroups: string[]) => {
-    setChannels(newChannels);
+    setChannels(applyFavorites(newChannels));
     setCategories(['TODOS', 'FAVORITOS', ...newGroups]);
     setSelectedCategory('TODOS');
   };
 
   const handleToggleFavorite = (channelId: string) => {
-    setChannels((prev) =>
-      prev.map((c) => (c.id === channelId ? { ...c, isFavorite: !c.isFavorite } : c))
-    );
+    setChannels((prev) => {
+      const updated = prev.map((c) => (c.id === channelId ? { ...c, isFavorite: !c.isFavorite } : c));
+      const userKey = currentUser?.id || 'guest';
+      const favIds = updated.filter((c) => c.isFavorite).map((c) => c.id);
+      try {
+        localStorage.setItem(`iptv_fav_ids_${userKey}`, JSON.stringify(favIds));
+      } catch {}
+      return updated;
+    });
   };
 
   const handleLogout = async () => {
@@ -108,6 +223,7 @@ export default function App() {
     localStorage.removeItem('iptv_auth_user');
     sessionStorage.removeItem('iptv_auth_token');
     sessionStorage.removeItem('iptv_auth_user');
+    loadedUserPlaylistRef.current = null;
     setCurrentUser(null);
   };
 
@@ -148,6 +264,25 @@ export default function App() {
   // Se não estiver autenticado, exibe a tela de Login / Criação de Conta
   if (!currentUser) {
     return <AuthScreen onAuthSuccess={(user) => setCurrentUser(user)} />;
+  }
+
+  // Se o usuário selecionou o modo do Portal do Cliente Final:
+  if (appViewMode === 'client') {
+    return (
+      <ClientPortalView
+        channels={channels}
+        categories={categories}
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        onOpenImporter={() => setIsImporterOpen(true)}
+        onToggleFavorite={handleToggleFavorite}
+        isAdminPreview={true}
+        onSwitchToAdmin={() => {
+          setAppViewMode('studio');
+          localStorage.setItem('iptv_app_view_mode', 'studio');
+        }}
+      />
+    );
   }
 
   return (
@@ -220,19 +355,64 @@ export default function App() {
 
           {/* Actions & User Profile */}
           <div className="flex items-center gap-2">
-            {/* Admin Management Button (visible only to admin role) */}
-            {currentUser.role === 'admin' && (
+            {/* User Linked Playlist Quick Button */}
+            <button
+              id="header-user-playlist-btn"
+              onClick={() => setIsImporterOpen(true)}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-medium border transition ${
+                currentUser.playlistUrl
+                  ? 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30 shadow-sm'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+              }`}
+              title={currentUser.playlistUrl ? `Lista vinculada: ${currentUser.playlistName || currentUser.playlistUrl}` : 'Vincular lista M3U à sua conta'}
+            >
+              <Tv className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden md:inline font-semibold">
+                {currentUser.playlistUrl ? (currentUser.playlistName || 'Lista Salva') : 'Adicionar Lista M3U'}
+              </span>
+              <span className="md:hidden">
+                {currentUser.playlistUrl ? 'Lista' : '+ M3U'}
+              </span>
+            </button>
+
+            {/* Admin Management Button (visible to AdminMaster and AdminRevenda) */}
+            {isMasterOrRevenda(currentUser.role) && (
               <button
                 id="header-admin-users-btn"
                 onClick={() => setIsAdminModalOpen(true)}
-                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-semibold transition shadow-sm"
-                title="Gerenciar usuários cadastrados, bloquear contas e controlar registro"
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition shadow-sm border cursor-pointer active:scale-95 ${
+                  normalizeUserRole(currentUser.role) === 'AdminMaster'
+                    ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
+                    : 'bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/40'
+                }`}
+                title="Painel de controle de usuários, revendas e datas de vencimento"
               >
-                <UsersIcon className="w-3.5 h-3.5 text-blue-400" />
-                <span className="hidden sm:inline">Gerenciar Usuários</span>
-                <span className="sm:hidden">Usuários</span>
+                {normalizeUserRole(currentUser.role) === 'AdminMaster' ? (
+                  <Crown className="w-3.5 h-3.5 text-amber-400" />
+                ) : (
+                  <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                )}
+                <span className="hidden sm:inline">
+                  {normalizeUserRole(currentUser.role) === 'AdminRevenda' ? 'Painel Revenda' : 'Painel Master'}
+                </span>
+                <span className="sm:hidden">Painel</span>
               </button>
             )}
+
+            {/* Switch to Client View (XCloud Template) */}
+            <button
+              id="header-client-preview-btn"
+              onClick={() => {
+                setAppViewMode('client');
+                localStorage.setItem('iptv_app_view_mode', 'client');
+              }}
+              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition shadow-sm border bg-red-600/20 hover:bg-red-600/30 text-red-300 border-red-500/40 cursor-pointer active:scale-95"
+              title="Visualizar o template exatamente como o cliente final vê após o login"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-red-400" />
+              <span className="hidden sm:inline">Ver App do Cliente</span>
+              <span className="sm:hidden">App Cliente</span>
+            </button>
 
             <button
               id="download-all-code-btn"
@@ -250,11 +430,36 @@ export default function App() {
                 <span className="text-xs font-semibold text-slate-200 leading-tight">
                   {currentUser.name}
                 </span>
-                <span className="text-[10px] text-blue-400 font-mono">
-                  @{currentUser.username} {currentUser.role === 'admin' && '• Admin'}
-                </span>
+                <div className="flex items-center justify-end gap-1 text-[10px] font-mono">
+                  <span className="text-slate-400">@{currentUser.username}</span>
+                  {currentUser.role === 'AdminMaster' || currentUser.role === 'admin' ? (
+                    <span className="text-amber-400 font-bold">• Master</span>
+                  ) : currentUser.role === 'AdminRevenda' ? (
+                    <span className="text-cyan-400 font-bold">• Revenda</span>
+                  ) : (
+                    <span className="text-emerald-400 font-medium">
+                      • {currentUser.expirationDate ? `Vence: ${currentUser.expirationDate.slice(0, 10).split('-').reverse().join('/')}` : 'Vitalício'}
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/40 text-blue-300 flex items-center justify-center font-bold text-xs">
+              <div
+                onClick={() => {
+                  if (isMasterOrRevenda(currentUser.role)) {
+                    setIsAdminModalOpen(true);
+                  }
+                }}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs border ${
+                  isMasterOrRevenda(currentUser.role) ? 'cursor-pointer hover:ring-2 hover:ring-blue-400/50' : ''
+                } ${
+                  normalizeUserRole(currentUser.role) === 'AdminMaster'
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                    : normalizeUserRole(currentUser.role) === 'AdminRevenda'
+                    ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                    : 'bg-slate-800 border-slate-700 text-slate-200'
+                }`}
+                title={isMasterOrRevenda(currentUser.role) ? 'Clique para abrir o painel' : undefined}
+              >
                 {currentUser.name.charAt(0).toUpperCase()}
               </div>
               <button
@@ -270,6 +475,32 @@ export default function App() {
         </div>
       </header>
 
+      {/* Auto-load User Playlist Notice Banner */}
+      {autoLoadNotice && (
+        <div className={`px-4 py-2 text-xs flex items-center justify-between border-b transition-all ${
+          autoLoadNotice.type === 'loading'
+            ? 'bg-blue-950/90 text-blue-200 border-blue-800/80'
+            : autoLoadNotice.type === 'success'
+            ? 'bg-emerald-950/90 text-emerald-200 border-emerald-800/80'
+            : 'bg-rose-950/90 text-rose-200 border-rose-800/80'
+        }`}>
+          <div className="flex items-center gap-2 max-w-7xl mx-auto w-full">
+            {autoLoadNotice.type === 'loading' && (
+              <div className="w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin shrink-0" />
+            )}
+            {autoLoadNotice.type === 'success' && <Check className="w-4 h-4 text-emerald-400 shrink-0" />}
+            {autoLoadNotice.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+            <span className="font-medium">{autoLoadNotice.message}</span>
+          </div>
+          <button
+            onClick={() => setAutoLoadNotice(null)}
+            className="text-slate-400 hover:text-white p-0.5 ml-2 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Main Workspace Body */}
       <main className="flex-1 flex flex-col">
         {viewMode === 'player' && (
@@ -281,6 +512,8 @@ export default function App() {
               onSelectCategory={setSelectedCategory}
               onOpenImporter={() => setIsImporterOpen(true)}
               onToggleFavorite={handleToggleFavorite}
+              currentUser={currentUser}
+              onOpenAdminPanel={() => setIsAdminModalOpen(true)}
             />
           </div>
         )}
@@ -320,10 +553,15 @@ export default function App() {
         isOpen={isImporterOpen}
         onClose={() => setIsImporterOpen(false)}
         onPlaylistLoaded={handlePlaylistLoaded}
+        currentUser={currentUser}
+        onUserUpdated={(updatedUser) => {
+          setCurrentUser(updatedUser);
+          localStorage.setItem('iptv_auth_user', JSON.stringify(updatedUser));
+        }}
       />
 
       {/* Admin Users Management Modal */}
-      {currentUser.role === 'admin' && (
+      {isAdminModalOpen && currentUser && (
         <AdminUsersModal
           isOpen={isAdminModalOpen}
           onClose={() => setIsAdminModalOpen(false)}
