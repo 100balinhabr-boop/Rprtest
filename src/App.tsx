@@ -41,11 +41,10 @@ export default function App() {
   });
   const [isVerifyingAuth, setIsVerifyingAuth] = useState<boolean>(true);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
-  // Modo de visualização: 'studio' (Admin Master com códigos e arquitetura) ou 'client' (Portal do Cliente Final)
   const [appViewMode, setAppViewMode] = useState<'studio' | 'client'>(() => {
     const saved = localStorage.getItem('iptv_app_view_mode');
     if (saved === 'client' || saved === 'studio') return saved;
-    return 'studio'; // Padrão no Studio de Desenvolvimento
+    return 'studio';
   });
 
   const isMasterOrRevenda = (role?: string) => {
@@ -62,7 +61,6 @@ export default function App() {
   const [autoLoadNotice, setAutoLoadNotice] = useState<{ type: 'loading' | 'success' | 'error'; message: string } | null>(null);
   const loadedUserPlaylistRef = useRef<string | null>(null);
 
-  // Verifica a sessão atual com o backend na inicialização
   useEffect(() => {
     const token = localStorage.getItem('iptv_auth_token') || sessionStorage.getItem('iptv_auth_token');
     if (!token) {
@@ -87,14 +85,12 @@ export default function App() {
         }
       })
       .catch(() => {
-        // Mantém a sessão salva offline caso haja interrupção temporária
       })
       .finally(() => {
         setIsVerifyingAuth(false);
       });
   }, []);
 
-  // Inicializa com a lista demonstrativa legal de canais HLS se nenhuma lista foi carregada ainda
   const getSavedFavoriteIds = (userId?: string): string[] => {
     try {
       const userKey = userId || currentUser?.id || 'guest';
@@ -121,14 +117,12 @@ export default function App() {
     }
   }, []);
 
-  // Re-aplica os favoritos salvos do usuário caso faça login ou troque de conta
   useEffect(() => {
     if (channels.length > 0 && currentUser) {
       setChannels((prev) => applyFavorites(prev, currentUser.id));
     }
   }, [currentUser?.id]);
 
-  // Carregamento automático da lista M3U salva do usuário logado
   useEffect(() => {
     if (!currentUser || !currentUser.playlistUrl) return;
 
@@ -150,8 +144,8 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             url: currentUser.playlistUrl,
-            maxChannels: 2000, // Limite seguro para abertura instantânea (1-2s) sem travar
-            mode: 'live', // Foco em canais de TV ao vivo leves e rápidos
+            maxChannels: 2000,
+            mode: 'live',
             preferFormat: 'm3u8',
           }),
         });
@@ -248,7 +242,6 @@ export default function App() {
     document.body.removeChild(element);
   };
 
-  // Se ainda estiver validando a sessão salva, exibe tela de carregamento suave
   if (isVerifyingAuth) {
     return (
       <div className="min-h-screen bg-[#050914] text-slate-100 flex flex-col items-center justify-center p-4">
@@ -261,12 +254,10 @@ export default function App() {
     );
   }
 
-  // Se não estiver autenticado, exibe a tela de Login / Criação de Conta
   if (!currentUser) {
     return <AuthScreen onAuthSuccess={(user) => setCurrentUser(user)} />;
   }
 
-  // Se o usuário selecionou o modo do Portal do Cliente Final:
   if (appViewMode === 'client') {
     return (
       <ClientPortalView
@@ -287,11 +278,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#070C18] text-slate-100 flex flex-col font-sans">
-      {/* Top Navigation Bar */}
       <header className="bg-[#0B1224] border-b border-slate-800/90 sticky top-0 z-40 shadow-xl">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 flex items-center justify-between min-h-[3.75rem] py-2 gap-2">
-          {/* Logo & Project Title */}
-          <div className="flex items-center gap-2.5 min-w-0">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-2 flex flex-wrap items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-2.5 min-w-0 shrink-0">
             <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-blue-400 flex items-center justify-center shadow-lg shadow-blue-500/20 ring-1 ring-blue-400/30 shrink-0">
               <Tv className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
             </div>
@@ -310,7 +299,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* View Modes Tabs */}
           <div className="flex items-center bg-slate-900/90 p-1 rounded-xl border border-slate-800 text-xs shrink-0">
             <button
               id="tab-player-btn"
@@ -353,9 +341,7 @@ export default function App() {
             </button>
           </div>
 
-          {/* Actions & User Profile */}
-          <div className="flex items-center gap-2">
-            {/* User Linked Playlist Quick Button */}
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap ml-auto">
             <button
               id="header-user-playlist-btn"
               onClick={() => setIsImporterOpen(true)}
@@ -375,7 +361,6 @@ export default function App() {
               </span>
             </button>
 
-            {/* Admin Management Button (visible to AdminMaster and AdminRevenda) */}
             {isMasterOrRevenda(currentUser.role) && (
               <button
                 id="header-admin-users-btn"
@@ -399,7 +384,6 @@ export default function App() {
               </button>
             )}
 
-            {/* Switch to Client View (XCloud Template) */}
             <button
               id="header-client-preview-btn"
               onClick={() => {
@@ -424,7 +408,6 @@ export default function App() {
               <span>Exportar Java</span>
             </button>
 
-            {/* Authenticated User Badge & Logout */}
             <div className="flex items-center gap-2 pl-2 border-l border-slate-800">
               <div className="hidden sm:flex flex-col text-right">
                 <span className="text-xs font-semibold text-slate-200 leading-tight">
@@ -475,7 +458,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Auto-load User Playlist Notice Banner */}
       {autoLoadNotice && (
         <div className={`px-4 py-2 text-xs flex items-center justify-between border-b transition-all ${
           autoLoadNotice.type === 'loading'
@@ -501,7 +483,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Workspace Body */}
       <main className="flex-1 flex flex-col">
         {viewMode === 'player' && (
           <div className="flex-1 h-[calc(100vh-4rem)]">
@@ -548,7 +529,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Playlist Importer Modal */}
       <PlaylistImporterModal
         isOpen={isImporterOpen}
         onClose={() => setIsImporterOpen(false)}
@@ -560,7 +540,6 @@ export default function App() {
         }}
       />
 
-      {/* Admin Users Management Modal */}
       {isAdminModalOpen && currentUser && (
         <AdminUsersModal
           isOpen={isAdminModalOpen}
