@@ -89,12 +89,12 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [allowRegistration, setAllowRegistration] = useState<boolean>(true);
   const [settingLoading, setSettingLoading] = useState<boolean>(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   const currentAdminRole = normalizeUserRole(currentAdmin.role);
   const isMaster = currentAdminRole === 'AdminMaster';
   const isRevenda = currentAdminRole === 'AdminRevenda';
 
-  // Form states for Create User
   const [formName, setFormName] = useState<string>('');
   const [formUsername, setFormUsername] = useState<string>('');
   const [formEmail, setFormEmail] = useState<string>('');
@@ -111,7 +111,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [lastCreatedUser, setLastCreatedUser] = useState<{ username: string; password: string; name: string; role: string; expirationDate: string | null } | null>(null);
   const [copiedCredentials, setCopiedCredentials] = useState<boolean>(false);
 
-  // States for Edit User
   const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
   const [editName, setEditName] = useState<string>('');
   const [editUsername, setEditUsername] = useState<string>('');
@@ -125,7 +124,6 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [editIsBlocked, setEditIsBlocked] = useState<boolean>(false);
   const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
 
-  // State for quick renew modal/popover
   const [renewingUser, setRenewingUser] = useState<UserAccount | null>(null);
   const [renewCustomDate, setRenewCustomDate] = useState<string>('');
   const [isRenewing, setIsRenewing] = useState<boolean>(false);
@@ -161,6 +159,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     if (isOpen) {
       fetchUsers();
       setFeedbackMsg(null);
+      setPendingDeleteId(null);
     }
   }, [isOpen]);
 
@@ -407,8 +406,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     }
   };
 
-  // EXCLUIR USUÁRIO — usa window.confirm nativo (mais confiável no celular)
-  const handleDeleteUser = async (user: UserAccount) => {
+  const handleRequestDelete = (user: UserAccount) => {
     const targetRole = normalizeUserRole(user.role);
 
     if (user.id === currentAdmin.id) {
@@ -424,16 +422,16 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     if (isRevenda && targetRole !== 'UsuarioComum') {
       setFeedbackMsg({ 
         type: 'error', 
-        text: 'AdminRevenda não tem permissão para remover revendedores ou administradores. Apenas o AdminMaster pode remover contas de revenda.' 
+        text: 'AdminRevenda não tem permissão para remover revendedores ou administradores.' 
       });
       return;
     }
 
-    const confirmado = window.confirm(
-      `Excluir permanentemente a conta de @${user.username} (${targetRole})?\n\nTodas as sessões ativas serão canceladas e o acesso será revogado.`
-    );
-    if (!confirmado) return;
+    setPendingDeleteId(user.id);
+    setFeedbackMsg(null);
+  };
 
+  const handleConfirmDelete = async (user: UserAccount) => {
     setActionLoadingId(user.id);
     setFeedbackMsg(null);
 
@@ -455,6 +453,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
       setFeedbackMsg({ type: 'error', text: 'Falha ao tentar excluir usuário.' });
     } finally {
       setActionLoadingId(null);
+      setPendingDeleteId(null);
     }
   };
 
@@ -661,6 +660,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
               onClick={() => {
                 setActiveTab('list');
                 setFeedbackMsg(null);
+                setPendingDeleteId(null);
               }}
               className={`flex items-center gap-2 py-3 px-3 border-b-2 text-xs font-semibold transition cursor-pointer ${
                 activeTab === 'list'
@@ -836,6 +836,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   const role = normalizeUserRole(user.role);
                   const isMe = user.id === currentAdmin.id;
                   const isActionRunning = actionLoadingId === user.id;
+                  const isPendingDelete = pendingDeleteId === user.id;
                   const expInfo = getExpirationInfo(user.expirationDate);
 
                   const canEdit = isMaster || (isRevenda && (role === 'UsuarioComum' || isMe));
@@ -848,7 +849,9 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                       key={user.id}
                       id={`user-row-${user.id}`}
                       className={`p-3.5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-3 transition ${
-                        user.isBlocked
+                        isPendingDelete
+                          ? 'bg-rose-950/40 border-rose-500/70 ring-2 ring-rose-500/40'
+                          : user.isBlocked
                           ? 'bg-rose-950/20 border-rose-900/50'
                           : expInfo.isExpired
                           ? 'bg-amber-950/15 border-amber-900/40'
@@ -972,71 +975,98 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-                        {canRenew && (
-                          <button
-                            id={`quick-renew-${user.id}`}
-                            onClick={() => handleQuickRenew(user, 30)}
-                            disabled={isActionRunning}
-                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 transition cursor-pointer"
-                            title="Renovar +30 dias de acesso"
-                          >
-                            <CalendarPlus className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>+30d</span>
-                          </button>
-                        )}
-
-                        {canEdit ? (
-                          <button
-                            id={`edit-user-${user.id}`}
-                            onClick={() => handleOpenEdit(user)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 transition cursor-pointer"
-                            title="Editar dados, validade e senha"
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                            <span>Editar</span>
-                          </button>
+                        {isPendingDelete ? (
+                          <>
+                            <span className="text-[11px] text-rose-200 font-bold px-1">
+                              Excluir @{user.username}?
+                            </span>
+                            <button
+                              id={`confirm-delete-${user.id}`}
+                              onClick={() => handleConfirmDelete(user)}
+                              disabled={isActionRunning}
+                              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-md shadow-rose-600/30 transition cursor-pointer active:scale-95 disabled:opacity-50"
+                            >
+                              {isActionRunning ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                              <span>Sim, excluir</span>
+                            </button>
+                            <button
+                              id={`cancel-delete-${user.id}`}
+                              onClick={() => setPendingDeleteId(null)}
+                              disabled={isActionRunning}
+                              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 transition cursor-pointer"
+                            >
+                              Cancelar
+                            </button>
+                          </>
                         ) : (
-                          <span className="text-[10px] text-slate-500 px-2 py-1 bg-slate-900/50 rounded-lg border border-slate-800">
-                            Sem Permissão
-                          </span>
-                        )}
-
-                        {canBlock && (
-                          <button
-                            id={`toggle-block-${user.id}`}
-                            onClick={() => handleToggleBlock(user)}
-                            disabled={isActionRunning}
-                            className={`p-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                              user.isBlocked
-                                ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
-                                : 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
-                            }`}
-                            title={user.isBlocked ? 'Desbloquear acesso' : 'Bloquear acesso do usuário'}
-                          >
-                            {isActionRunning ? (
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            ) : user.isBlocked ? (
-                              <Unlock className="w-3.5 h-3.5" />
-                            ) : (
-                              <Lock className="w-3.5 h-3.5" />
+                          <>
+                            {canRenew && (
+                              <button
+                                id={`quick-renew-${user.id}`}
+                                onClick={() => handleQuickRenew(user, 30)}
+                                disabled={isActionRunning}
+                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 transition cursor-pointer"
+                                title="Renovar +30 dias de acesso"
+                              >
+                                <CalendarPlus className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>+30d</span>
+                              </button>
                             )}
-                          </button>
-                        )}
 
-                        {canDelete && (
-                          <button
-                            id={`delete-user-${user.id}`}
-                            onClick={() => handleDeleteUser(user)}
-                            disabled={isActionRunning}
-                            className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80 hover:border-rose-500/40 transition cursor-pointer"
-                            title={role === 'AdminRevenda' ? 'Excluir Revendedor (Apenas Master)' : 'Excluir conta definitivamente'}
-                          >
-                            {isActionRunning ? (
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            {canEdit ? (
+                              <button
+                                id={`edit-user-${user.id}`}
+                                onClick={() => handleOpenEdit(user)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 transition cursor-pointer"
+                                title="Editar dados, validade e senha"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                                <span>Editar</span>
+                              </button>
                             ) : (
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <span className="text-[10px] text-slate-500 px-2 py-1 bg-slate-900/50 rounded-lg border border-slate-800">
+                                Sem Permissão
+                              </span>
                             )}
-                          </button>
+
+                            {canBlock && (
+                              <button
+                                id={`toggle-block-${user.id}`}
+                                onClick={() => handleToggleBlock(user)}
+                                disabled={isActionRunning}
+                                className={`p-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                                  user.isBlocked
+                                    ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
+                                    : 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
+                                }`}
+                                title={user.isBlocked ? 'Desbloquear acesso' : 'Bloquear acesso do usuário'}
+                              >
+                                {isActionRunning ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : user.isBlocked ? (
+                                  <Unlock className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Lock className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+
+                            {canDelete && (
+                              <button
+                                id={`delete-user-${user.id}`}
+                                onClick={() => handleRequestDelete(user)}
+                                disabled={isActionRunning}
+                                className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80 hover:border-rose-500/40 transition cursor-pointer"
+                                title={role === 'AdminRevenda' ? 'Excluir Revendedor (Apenas Master)' : 'Excluir conta definitivamente'}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
