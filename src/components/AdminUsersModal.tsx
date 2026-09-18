@@ -32,7 +32,13 @@ import {
   Crown,
   Briefcase,
   CalendarPlus,
-  AlertTriangle
+  AlertTriangle,
+  StickyNote,
+  UserCheck,
+  UserX,
+  TrendingUp,
+  MessageCircle,
+  Send
 } from 'lucide-react';
 
 interface AdminUsersModalProps {
@@ -60,19 +66,22 @@ export const formatDateDisplay = (dateStr?: string | null): string => {
 
 export const getExpirationInfo = (expirationDate?: string | null) => {
   if (!expirationDate || expirationDate === 'vitalicio') {
-    return { status: 'vitalicio' as const, label: 'Vitalício', isExpired: false, daysLeft: Infinity };
+    return { status: 'vitalicio' as const, label: 'Vitalício', isExpired: false, daysLeft: Infinity, isExpiring7: false };
   }
   const exp = new Date(`${expirationDate.slice(0, 10)}T23:59:59`);
   const now = new Date();
   const diffMs = exp.getTime() - now.getTime();
   const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
   if (daysLeft < 0) {
-    return { status: 'expired' as const, label: `Vencido (${formatDateDisplay(expirationDate)})`, isExpired: true, daysLeft };
+    return { status: 'expired' as const, label: `Vencido (${formatDateDisplay(expirationDate)})`, isExpired: true, daysLeft, isExpiring7: false };
   }
   if (daysLeft <= 5) {
-    return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft };
+    return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft, isExpiring7: true };
   }
-  return { status: 'active' as const, label: `Válido até ${formatDateDisplay(expirationDate)}`, isExpired: false, daysLeft };
+  if (daysLeft <= 7) {
+    return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft, isExpiring7: true };
+  }
+  return { status: 'active' as const, label: `Válido até ${formatDateDisplay(expirationDate)}`, isExpired: false, daysLeft, isExpiring7: false };
 };
 
 export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
@@ -81,7 +90,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   currentAdmin,
 }) => {
   const [activeTab, setActiveTab] = useState<'list' | 'create'>('list');
-  const [filterRole, setFilterRole] = useState<'all' | 'UsuarioComum' | 'AdminRevenda' | 'AdminMaster' | 'expired'>('all');
+  const [filterRole, setFilterRole] = useState<'all' | 'UsuarioComum' | 'AdminRevenda' | 'AdminMaster' | 'expired' | 'expiring7'>('all');
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -90,6 +99,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [allowRegistration, setAllowRegistration] = useState<boolean>(true);
   const [settingLoading, setSettingLoading] = useState<boolean>(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
 
   const currentAdminRole = normalizeUserRole(currentAdmin.role);
   const isMaster = currentAdminRole === 'AdminMaster';
@@ -106,6 +116,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   });
   const [formPlaylistUrl, setFormPlaylistUrl] = useState<string>('');
   const [formPlaylistName, setFormPlaylistName] = useState<string>('');
+  const [formNotes, setFormNotes] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [isSubmittingNewUser, setIsSubmittingNewUser] = useState<boolean>(false);
   const [lastCreatedUser, setLastCreatedUser] = useState<{ username: string; password: string; name: string; role: string; expirationDate: string | null } | null>(null);
@@ -120,6 +131,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const [editPassword, setEditPassword] = useState<string>('');
   const [editPlaylistUrl, setEditPlaylistUrl] = useState<string>('');
   const [editPlaylistName, setEditPlaylistName] = useState<string>('');
+  const [editNotes, setEditNotes] = useState<string>('');
   const [editShowPassword, setEditShowPassword] = useState<boolean>(false);
   const [editIsBlocked, setEditIsBlocked] = useState<boolean>(false);
   const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
@@ -225,6 +237,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           expirationDate: formExpirationDate ? formExpirationDate : null,
           playlistUrl: formPlaylistUrl.trim() || undefined,
           playlistName: formPlaylistName.trim() || undefined,
+          notes: formNotes.trim() || undefined,
         }),
       });
 
@@ -253,6 +266,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
         setFormExpirationDate(defaultNextMonth);
         setFormPlaylistUrl('');
         setFormPlaylistName('');
+        setFormNotes('');
       } else {
         setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao cadastrar novo usuário.' });
       }
@@ -268,10 +282,20 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     const expText = lastCreatedUser.expirationDate 
       ? formatDateDisplay(lastCreatedUser.expirationDate)
       : 'Vitalício / Sem Vencimento';
-    const textToCopy = `🔐 *Acesso IPTV Player*\n👤 Usuário: ${lastCreatedUser.username}\n🔑 Senha: ${lastCreatedUser.password}\n📅 Vencimento: ${expText}\nCargo: ${lastCreatedUser.role}`;
+    const textToCopy = `🔐 *Acesso RPR TV FREE*\n👤 Usuário: ${lastCreatedUser.username}\n🔑 Senha: ${lastCreatedUser.password}\n📅 Vencimento: ${expText}\n\nBaixe o app e faça login com esses dados.`;
     navigator.clipboard.writeText(textToCopy);
     setCopiedCredentials(true);
     setTimeout(() => setCopiedCredentials(false), 2500);
+  };
+
+  const handleCopyUserCredentials = (user: UserAccount) => {
+    const expText = user.expirationDate 
+      ? formatDateDisplay(user.expirationDate)
+      : 'Vitalício';
+    const textToCopy = `🔐 *Acesso RPR TV FREE*\n👤 Usuário: ${user.username}\n🔑 Senha: (a que você definiu no cadastro)\n📅 Vencimento: ${expText}\n\nBaixe o app e faça login com esses dados.`;
+    navigator.clipboard.writeText(textToCopy);
+    setCopiedUserId(user.id);
+    setTimeout(() => setCopiedUserId(null), 2000);
   };
 
   const handleToggleBlock = async (user: UserAccount) => {
@@ -338,6 +362,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     setEditPassword('');
     setEditPlaylistUrl(user.playlistUrl || '');
     setEditPlaylistName(user.playlistName || '');
+    setEditNotes((user as any).notes || '');
     setEditShowPassword(false);
     setFeedbackMsg(null);
   };
@@ -388,6 +413,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           isBlocked: editIsBlocked,
           playlistUrl: editPlaylistUrl.trim() || undefined,
           playlistName: editPlaylistName.trim() || undefined,
+          notes: editNotes.trim() || undefined,
         }),
       });
 
@@ -532,6 +558,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     if (filterRole === 'AdminRevenda' && role !== 'AdminRevenda') return false;
     if (filterRole === 'AdminMaster' && role !== 'AdminMaster') return false;
     if (filterRole === 'expired' && !expInfo.isExpired) return false;
+    if (filterRole === 'expiring7' && !expInfo.isExpiring7) return false;
 
     const q = searchQuery.toLowerCase().trim();
     if (!q) return true;
@@ -549,6 +576,14 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
   const masterUsers = users.filter(u => normalizeUserRole(u.role) === 'AdminMaster').length;
   const expiredUsers = users.filter(u => getExpirationInfo(u.expirationDate).isExpired).length;
   const blockedUsersCount = users.filter((u) => u.isBlocked).length;
+  const expiring7Users = users.filter(u => getExpirationInfo(u.expirationDate).isExpiring7).length;
+  const activeClients = users.filter(u => {
+    const role = normalizeUserRole(u.role);
+    if (role !== 'UsuarioComum') return false;
+    if (u.isBlocked) return false;
+    if (getExpirationInfo(u.expirationDate).isExpired) return false;
+    return true;
+  }).length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
@@ -651,6 +686,110 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
             </span>
           )}
         </div>
+
+        {/* DASHBOARD DE TOPO — visão rápida para o AdminMaster */}
+        {isMaster && activeTab === 'list' && (
+          <div className="px-5 pt-4 pb-3 bg-[#0A1020] border-b border-slate-800">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              <button
+                onClick={() => setFilterRole('all')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'all'
+                    ? 'bg-blue-600/20 border-blue-500/60 ring-1 ring-blue-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Ver todos os usuários"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-semibold uppercase tracking-wide">
+                  <Users className="w-3 h-3" />
+                  Total
+                </div>
+                <div className="text-lg font-bold text-white mt-0.5">{totalUsers}</div>
+              </button>
+
+              <button
+                onClick={() => setFilterRole('UsuarioComum')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'UsuarioComum'
+                    ? 'bg-emerald-600/20 border-emerald-500/60 ring-1 ring-emerald-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Clientes ativos (não vencidos, não bloqueados)"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-semibold uppercase tracking-wide">
+                  <UserCheck className="w-3 h-3" />
+                  Ativos
+                </div>
+                <div className="text-lg font-bold text-emerald-300 mt-0.5">{activeClients}</div>
+              </button>
+
+              <button
+                onClick={() => setFilterRole('expiring7')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'expiring7'
+                    ? 'bg-amber-600/20 border-amber-500/60 ring-1 ring-amber-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Clientes que vencem nos próximos 7 dias"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-semibold uppercase tracking-wide">
+                  <TrendingUp className="w-3 h-3" />
+                  Vencendo 7d
+                </div>
+                <div className={`text-lg font-bold mt-0.5 ${expiring7Users > 0 ? 'text-amber-300' : 'text-slate-500'}`}>
+                  {expiring7Users}
+                </div>
+              </button>
+
+              <button
+                onClick={() => setFilterRole('expired')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'expired'
+                    ? 'bg-rose-600/20 border-rose-500/60 ring-1 ring-rose-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Clientes com acesso vencido"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-rose-400 font-semibold uppercase tracking-wide">
+                  <Clock className="w-3 h-3" />
+                  Vencidos
+                </div>
+                <div className={`text-lg font-bold mt-0.5 ${expiredUsers > 0 ? 'text-rose-300' : 'text-slate-500'}`}>
+                  {expiredUsers}
+                </div>
+              </button>
+
+              <button
+                onClick={() => setFilterRole('AdminRevenda')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'AdminRevenda'
+                    ? 'bg-blue-600/20 border-blue-500/60 ring-1 ring-blue-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Revendedores cadastrados"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-blue-400 font-semibold uppercase tracking-wide">
+                  <Briefcase className="w-3 h-3" />
+                  Revendas
+                </div>
+                <div className="text-lg font-bold text-blue-300 mt-0.5">{revendaUsers}</div>
+              </button>
+
+              <div
+                className="p-2.5 rounded-xl border bg-[#121A30] border-slate-800"
+                title="Usuários bloqueados"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-semibold uppercase tracking-wide">
+                  <UserX className="w-3 h-3" />
+                  Bloqueados
+                </div>
+                <div className={`text-lg font-bold mt-0.5 ${blockedUsersCount > 0 ? 'text-slate-300' : 'text-slate-500'}`}>
+                  {blockedUsersCount}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="px-5 bg-[#0E1628] border-b border-slate-800/80 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1 sm:gap-2">
@@ -774,6 +913,18 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                 </button>
 
                 <button
+                  onClick={() => setFilterRole('expiring7')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 flex items-center gap-1 ${
+                    filterRole === 'expiring7'
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-slate-800 text-amber-400 hover:text-amber-300'
+                  }`}
+                >
+                  <TrendingUp className="w-3 h-3" />
+                  Vencendo 7d ({expiring7Users})
+                </button>
+
+                <button
                   onClick={() => setFilterRole('AdminRevenda')}
                   className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
                     filterRole === 'AdminRevenda'
@@ -837,7 +988,9 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   const isMe = user.id === currentAdmin.id;
                   const isActionRunning = actionLoadingId === user.id;
                   const isPendingDelete = pendingDeleteId === user.id;
+                  const isCopied = copiedUserId === user.id;
                   const expInfo = getExpirationInfo(user.expirationDate);
+                  const userNotes = (user as any).notes;
 
                   const canEdit = isMaster || (isRevenda && (role === 'UsuarioComum' || isMe));
                   const canDelete = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
@@ -921,7 +1074,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                                 <Clock className="w-2.5 h-2.5" />
                                 {expInfo.label}
                               </span>
-                            ) : expInfo.status === 'warning' ? (
+                            ) : expInfo.isExpiring7 ? (
                               <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
                                 <AlertTriangle className="w-2.5 h-2.5" />
                                 {expInfo.label}
@@ -950,6 +1103,16 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                               </span>
                             )}
 
+                            {userNotes && (
+                              <span
+                                className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 text-[10px] font-semibold flex items-center gap-1"
+                                title={`Anotação: ${userNotes}`}
+                              >
+                                <StickyNote className="w-2.5 h-2.5" />
+                                <span>Nota</span>
+                              </span>
+                            )}
+
                             {isMe && (
                               <span className="text-[10px] text-slate-500 italic">
                                 (Você)
@@ -971,6 +1134,13 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                               </span>
                             )}
                           </div>
+
+                          {userNotes && (
+                            <div className="mt-1.5 text-[11px] text-yellow-200/90 bg-yellow-950/20 border border-yellow-900/40 rounded-lg px-2 py-1 flex items-start gap-1.5">
+                              <StickyNote className="w-3 h-3 text-yellow-400 shrink-0 mt-0.5" />
+                              <span className="italic">{userNotes}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -1004,6 +1174,29 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                           </>
                         ) : (
                           <>
+                            <button
+                              id={`copy-credentials-${user.id}`}
+                              onClick={() => handleCopyUserCredentials(user)}
+                              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                                isCopied
+                                  ? 'bg-emerald-600/30 text-emerald-200 border-emerald-500/60'
+                                  : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border-slate-700'
+                              }`}
+                              title="Copiar credenciais para enviar ao cliente"
+                            >
+                              {isCopied ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">Copiado</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">Credenciais</span>
+                                </>
+                              )}
+                            </button>
+
                             {canRenew && (
                               <button
                                 id={`quick-renew-${user.id}`}
@@ -1022,7 +1215,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                                 id={`edit-user-${user.id}`}
                                 onClick={() => handleOpenEdit(user)}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 transition cursor-pointer"
-                                title="Editar dados, validade e senha"
+                                title="Editar dados, validade, senha e anotações"
                               >
                                 <Pencil className="w-3.5 h-3.5" />
                                 <span>Editar</span>
@@ -1361,6 +1554,22 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                       />
                     </div>
                   </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-yellow-950/20 border border-yellow-800/40 space-y-2">
+                  <label className="text-xs font-semibold text-yellow-300 flex items-center gap-1.5">
+                    <StickyNote className="w-3.5 h-3.5 text-yellow-400" />
+                    <span>Anotações Internas</span>
+                    <span className="text-[10px] text-yellow-500/70 font-normal">(só você vê)</span>
+                  </label>
+                  <textarea
+                    id="admin-create-notes"
+                    rows={2}
+                    placeholder="Ex: Cliente pagou via PIX dia 15. Prefere contato à noite. Reclamou do canal X."
+                    value={formNotes}
+                    onChange={(e) => setFormNotes(e.target.value)}
+                    className="w-full bg-[#162035] border border-yellow-800/40 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 resize-none"
+                  />
                 </div>
 
                 <button
@@ -1717,6 +1926,22 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                       />
                     </div>
                   </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-yellow-950/20 border border-yellow-800/40 space-y-2">
+                  <label className="text-xs font-semibold text-yellow-300 flex items-center gap-1.5">
+                    <StickyNote className="w-3.5 h-3.5 text-yellow-400" />
+                    <span>Anotações Internas</span>
+                    <span className="text-[10px] text-yellow-500/70 font-normal">(só você vê)</span>
+                  </label>
+                  <textarea
+                    id="edit-user-notes"
+                    rows={3}
+                    placeholder="Ex: Cliente pagou via PIX dia 15. Prefere contato à noite."
+                    value={editNotes}
+                    onChange={(e) => setEditNotes(e.target.value)}
+                    className="w-full bg-[#1A2642] border border-yellow-800/40 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 resize-none"
+                  />
                 </div>
 
                 {editingUser.id !== currentAdmin.id && (
