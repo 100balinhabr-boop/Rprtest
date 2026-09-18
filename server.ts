@@ -35,6 +35,7 @@ interface StoredUser {
   createdBy?: string;
   createdByName?: string;
   notes?: string;
+  lastSeen?: string;
 }
 
 function normalizeRole(role?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' {
@@ -84,6 +85,7 @@ function formatSafeUser(u: StoredUser) {
     createdBy: u.createdBy,
     createdByName: u.createdByName,
     notes: u.notes,
+    lastSeen: u.lastSeen,
   };
 }
 
@@ -126,6 +128,7 @@ const DATA_DIR = path.join(process.cwd(), "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
+const AUDIT_FILE = path.join(DATA_DIR, "audit.log");
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -133,6 +136,91 @@ function ensureDataDir() {
   }
 }
 
+// ----------------------------------------------------
+// Audit Log
+// ----------------------------------------------------
+function auditLog(actor: string, action: string, target?: string, details?: any) {
+  try {
+    ensureDataDir();
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      actor,
+      action,
+      target: target || null,
+      details: details || null,
+    });
+    fs.appendFileSync(AUDIT_FILE, line + "\n", "utf-8");
+
+    const stats = fs.statSync(AUDIT_FILE);
+    if (stats.size > 1024 * 1024) {
+      const raw = fs.readFileSync(AUDIT_FILE, "utf-8");
+      const lines = raw.trim().split("\n");
+      const keep = lines.slice(-500);
+      fs.writeFileSync(AUDIT_FILE, keep.join("\n") + "\n", "utf-8");
+    }
+  } catch (e) {
+    console.error("[Audit] Erro:", e);
+  }
+}
+
+function readAuditLog(limit = 100): any[] {
+  try {
+    if (!fs.existsSync(AUDIT_FILE)) return [];
+    const raw = fs.readFileSync(AUDIT_FILE, "utf-8");
+    const lines = raw.trim().split("\n").filter(Boolean);
+    return lines
+      .slice(-limit)
+      .reverse()
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// ----------------------------------------------------
+// Rate Limit (login)
+// ----------------------------------------------------
+const loginAttempts = new Map<string, { count: number; blockedUntil: number }>();
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_BLOCK_MS = 15 * 60 * 1000;
+
+function getClientIp(req: express.Request): string {
+  const fwd = req.headers["x-forwarded-for"];
+  if (typeof fwd === "string") return fwd.split(",")[0].trim();
+  return req.socket.remoteAddress || "unknown";
+}
+
+function checkLoginRateLimit(ip: string): { allowed: boolean; remainingMs?: number } {
+  const rec = loginAttempts.get(ip);
+  if (!rec) return { allowed: true };
+  if (rec.blockedUntil > Date.now()) {
+    return { allowed: false, remainingMs: rec.blockedUntil - Date.now() };
+  }
+  if (rec.blockedUntil > 0 && rec.blockedUntil <= Date.now()) {
+    loginAttempts.delete(ip);
+    return { allowed: true };
+  }
+  return { allowed: true };
+}
+
+function registerLoginFailure(ip: string) {
+  const rec = loginAttempts.get(ip) || { count: 0, blockedUntil: 0 };
+  rec.count += 1;
+  if (rec.count >= LOGIN_MAX_ATTEMPTS) {
+    rec.blockedUntil = Date.now() + LOGIN_BLOCK_MS;
+    rec.count = 0;
+  }
+  loginAttempts.set(ip, rec);
+}
+
+function resetLoginAttempts(ip: string) {
+  loginAttempts.delete(ip);
+}
+
+// ----------------------------------------------------
+// Settings
+// ----------------------------------------------------
 function sanitizeBranding(input: any, current: ClientBranding): ClientBranding {
   return {
     appName: typeof input.appName === 'string' && input.appName.trim()
@@ -391,8 +479,6 @@ app.get("/api/auth/settings", (req, res) => {
   return res.json({ success: true, settings });
 });
 
-// Endpoint público — config visual do app do cliente
-// Se o cliente estiver autenticado e tiver sido criado por uma revenda, retorna o branding dela
 app.get("/api/client-config", (req, res) => {
   const settings = loadSettings();
   const authHeader = req.headers.authorization;
@@ -407,10 +493,8 @@ app.get("/api/client-config", (req, res) => {
       const users = loadUsers();
       const user = users.find(u => u.id === session.userId);
       if (user && user.createdBy) {
-        // Acha quem criou esse cliente
         const creator = users.find(u => u.username === user.createdBy);
         if (creator && normalizeRole(creator.role) === 'AdminRevenda') {
-          // Usa branding e tabs do revendedor
           const rBranding = settings.resellerBranding?.[creator.id];
           if (rBranding) branding = { ...DEFAULT_BRANDING, ...rBranding };
           const rTabs = settings.resellerTabs?.[creator.id];
@@ -420,14 +504,20 @@ app.get("/api/client-config", (req, res) => {
     }
   }
 
-  return res.json({
-    success: true,
-    clientTabs,
-    branding,
-  });
+  return res.json({ success: true, clientTabs, branding });
 });
 
 app.post("/api/auth/login", (req, res) => {
+  const ip = getClientIp(req);
+  const rate = checkLoginRateLimit(ip);
+  if (!rate.allowed) {
+    const mins = Math.ceil((rate.remainingMs || 0) / 60000);
+    return res.status(429).json({
+      success: false,
+      error: `Muitas tentativas. Tente novamente em ${mins} minuto(s).`
+    });
+  }
+
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ success: false, error: "Usuário e senha são obrigatórios." });
@@ -436,15 +526,19 @@ app.post("/api/auth/login", (req, res) => {
   const users = loadUsers();
   const user = users.find(u => u.username.toLowerCase() === String(username).trim().toLowerCase());
   if (!user) {
+    registerLoginFailure(ip);
+    auditLog(String(username), "login_failed", undefined, { reason: "user_not_found" });
     return res.status(401).json({ success: false, error: "Usuário ou senha incorretos." });
   }
 
   if (user.isBlocked) {
+    auditLog(user.username, "login_failed", undefined, { reason: "blocked" });
     return res.status(403).json({ success: false, error: "Esta conta foi bloqueada pelo administrador. Acesso negado." });
   }
 
   const role = normalizeRole(user.role);
   if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
+    auditLog(user.username, "login_failed", undefined, { reason: "expired" });
     return res.status(403).json({
       success: false, isExpired: true, expirationDate: user.expirationDate,
       error: `Seu acesso venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com seu revendedor ou suporte para renovar o acesso.`
@@ -453,13 +547,26 @@ app.post("/api/auth/login", (req, res) => {
 
   const calculatedHash = hashPassword(String(password), user.salt);
   if (calculatedHash !== user.passwordHash) {
+    registerLoginFailure(ip);
+    auditLog(user.username, "login_failed", undefined, { reason: "wrong_password" });
     return res.status(401).json({ success: false, error: "Usuário ou senha incorretos." });
   }
+
+  resetLoginAttempts(ip);
 
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
   sessions.set(token, { userId: user.id, expiresAt });
   saveSessions(sessions);
+
+  // Marca lastSeen no login
+  const idx = users.findIndex(u => u.id === user.id);
+  if (idx !== -1) {
+    users[idx].lastSeen = new Date().toISOString();
+    saveUsers(users);
+  }
+
+  auditLog(user.username, "login_success");
 
   return res.json({
     success: true, user: formatSafeUser(user), token,
@@ -509,6 +616,7 @@ app.post("/api/auth/register", (req, res) => {
 
   users.push(newUser);
   saveUsers(users);
+  auditLog(cleanUsername, "register");
 
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
@@ -557,6 +665,13 @@ app.get("/api/auth/me", (req, res) => {
     });
   }
 
+  // Atualiza lastSeen
+  const idx = users.findIndex(u => u.id === user.id);
+  if (idx !== -1) {
+    users[idx].lastSeen = new Date().toISOString();
+    saveUsers(users);
+  }
+
   return res.json({ success: true, user: formatSafeUser(user) });
 });
 
@@ -601,6 +716,7 @@ app.post("/api/user/playlist", (req, res) => {
   users[index].playlistName = cleanName;
   users[index].playlistUpdatedAt = new Date().toISOString();
   saveUsers(users);
+  auditLog(user.username, "save_playlist", undefined, { name: cleanName });
 
   return res.json({
     success: true,
@@ -640,7 +756,6 @@ app.get("/api/admin/users", (req, res) => {
   const users = loadUsers();
   const settings = loadSettings();
 
-  // Retorna a config que ESSE admin deve ver no painel
   let myBranding = settings.branding || DEFAULT_BRANDING;
   let myTabs = settings.clientTabs || DEFAULT_CLIENT_TABS;
 
@@ -724,6 +839,7 @@ app.post("/api/admin/users", (req, res) => {
 
   users.push(newUser);
   saveUsers(users);
+  auditLog(adminUser.username, "create_user", cleanUsername, { role: assignedRole });
 
   return res.status(201).json({
     success: true,
@@ -756,7 +872,6 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
     return res.status(403).json({ success: false, error: "AdminRevenda só tem permissão para gerenciar Usuários Comuns." });
   }
 
-  // Revenda só pode gerenciar clientes que ELE criou
   if (isRevenda && users[targetIndex].createdBy !== adminUser.username) {
     return res.status(403).json({ success: false, error: "Você só pode gerenciar clientes criados por você." });
   }
@@ -764,6 +879,7 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
   const nowBlocked = !users[targetIndex].isBlocked;
   users[targetIndex].isBlocked = nowBlocked;
   saveUsers(users);
+  auditLog(adminUser.username, nowBlocked ? "block_user" : "unblock_user", users[targetIndex].username);
 
   if (nowBlocked) {
     for (const [token, session] of sessions.entries()) {
@@ -807,7 +923,6 @@ app.put("/api/admin/users/:id", (req, res) => {
     return res.status(403).json({ success: false, error: "AdminRevenda não tem permissão para alterar cargos ou promover usuários." });
   }
 
-  // Revenda só pode editar clientes que ELE criou
   if (isRevenda && targetId !== adminUser.id && currentUser.createdBy !== adminUser.username) {
     return res.status(403).json({ success: false, error: "Você só pode editar clientes criados por você." });
   }
@@ -883,6 +998,7 @@ app.put("/api/admin/users/:id", (req, res) => {
 
   users[targetIndex] = currentUser;
   saveUsers(users);
+  auditLog(adminUser.username, "update_user", currentUser.username);
 
   return res.json({
     success: true,
@@ -931,6 +1047,7 @@ app.post("/api/admin/users/:id/renew", (req, res) => {
   currentUser.expirationDate = finalDateStr;
   users[targetIndex] = currentUser;
   saveUsers(users);
+  auditLog(adminUser.username, "renew_user", currentUser.username, { newDate: finalDateStr });
 
   const displayMsg = finalDateStr
     ? `Acesso de @${currentUser.username} renovado até ${formatDateBR(finalDateStr)} com sucesso!`
@@ -976,6 +1093,7 @@ app.delete("/api/admin/users/:id", (req, res) => {
 
   users = users.filter(u => u.id !== targetId);
   saveUsers(users);
+  auditLog(adminUser.username, "delete_user", target.username, { role: targetRole });
 
   for (const [token, session] of sessions.entries()) {
     if (session.userId === targetId) sessions.delete(token);
@@ -996,12 +1114,10 @@ app.post("/api/admin/settings", (req, res) => {
   const { allowPublicRegistration, clientTabs, branding } = req.body;
   const settings = loadSettings();
 
-  // Cadastros públicos só Master controla
   if (typeof allowPublicRegistration === "boolean" && isMaster) {
     settings.allowPublicRegistration = allowPublicRegistration;
   }
 
-  // Master → salva global. Revenda → salva no próprio bucket
   if (isMaster) {
     if (Array.isArray(clientTabs)) {
       settings.clientTabs = sanitizeTabs(clientTabs, settings.clientTabs || DEFAULT_CLIENT_TABS);
@@ -1023,6 +1139,7 @@ app.post("/api/admin/settings", (req, res) => {
   }
 
   saveSettings(settings);
+  auditLog(adminUser.username, "update_settings", undefined, { scope: isMaster ? "global" : "reseller" });
 
   return res.json({
     success: true,
@@ -1031,9 +1148,54 @@ app.post("/api/admin/settings", (req, res) => {
   });
 });
 
+// ----------------------------------------------------
+// Audit + Stats
+// ----------------------------------------------------
+
+app.get("/api/admin/audit", (req, res) => {
+  const { adminUser, error } = getAuthenticatedAdmin(req);
+  if (error || !adminUser) {
+    return res.status(403).json({ success: false, error: error || "Não autorizado." });
+  }
+  const limit = Math.max(1, Math.min(500, parseInt(String(req.query.limit)) || 100));
+  return res.json({ success: true, entries: readAuditLog(limit) });
+});
+
+// Online users: logados nos últimos 5 minutos
+app.get("/api/admin/online", (req, res) => {
+  const { adminUser, isMaster, error } = getAuthenticatedAdmin(req);
+  if (error || !adminUser) {
+    return res.status(403).json({ success: false, error: error || "Não autorizado." });
+  }
+
+  const users = loadUsers();
+  const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+
+  let list = users.filter(u => {
+    if (!u.lastSeen) return false;
+    return new Date(u.lastSeen).getTime() >= fiveMinAgo;
+  });
+
+  if (!isMaster) {
+    // Revenda só vê os próprios clientes
+    list = list.filter(u => u.createdBy === adminUser.username);
+  }
+
+  return res.json({
+    success: true,
+    count: list.length,
+    users: list.map(formatSafeUser),
+  });
+});
+
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
+
+// ----------------------------------------------------
+// Playlist Loader / Xtream Engine / Proxy
+// (inalterado — mantém igual ao que já estava)
+// ----------------------------------------------------
 
 interface ParsedChannel {
   id: string;
