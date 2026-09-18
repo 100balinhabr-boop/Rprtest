@@ -108,14 +108,18 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [activeSlide, setActiveSlide] = useState<number>(0);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
 
-  // Config dinâmica vinda do backend
   const [clientTabs, setClientTabs] = useState<ClientTabConfig[]>(DEFAULT_CLIENT_TABS);
   const [branding, setBranding] = useState<ClientBranding>(DEFAULT_BRANDING);
 
   const accent = branding.accentColor;
 
+  // Pega config com token — o backend retorna branding do revendedor se o cliente foi criado por um
   useEffect(() => {
-    fetch('/api/client-config')
+    const token = localStorage.getItem('iptv_auth_token') || sessionStorage.getItem('iptv_auth_token') || '';
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    fetch('/api/client-config', { headers })
       .then(res => res.json())
       .then(data => {
         if (data.success) {
@@ -128,7 +132,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         }
       })
       .catch(() => {});
-  }, []);
+  }, [currentUser?.id]);
 
   // Se a aba atual foi ocultada, pula pra uma visível
   useEffect(() => {
@@ -901,10 +905,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     );
   };
 
-  // Filtrar abas visíveis
   const visibleTabs = clientTabs.filter(t => t.visible);
 
-  // Rótulo dinâmico por aba
   const getTabLabel = (id: ClientTab): string => {
     const t = clientTabs.find(x => x.id === id);
     return t ? t.label : id.toUpperCase();
@@ -940,7 +942,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               onClick={onSwitchToAdmin}
               className="px-3 py-1 bg-black/40 hover:bg-black/60 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
             >
-              <span>Voltar ao Painel Master</span>
+              <span>Voltar ao Painel</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
           )}
@@ -985,8 +987,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 style={{ background: hexWithAlpha(accent, 0.2), borderColor: hexWithAlpha(accent, 0.5), color: accent }}
               >
                 <Code2 className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Studio / Admin</span>
-                <span className="sm:hidden">Studio</span>
+                <span className="hidden sm:inline">Studio</span>
               </button>
             )}
 
@@ -1015,9 +1016,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={
-                    activeTab === 'movies' ? 'Buscar filmes por título ou gênero...'
-                    : activeTab === 'series' ? 'Buscar séries e novelas...'
-                    : 'Buscar canais de TV ao vivo...'
+                    activeTab === 'movies' ? 'Buscar filmes...'
+                    : activeTab === 'series' ? 'Buscar séries...'
+                    : 'Buscar canais...'
                   }
                   autoFocus
                   className="w-full bg-[#151923] border border-slate-700 rounded-xl pl-10 pr-10 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none"
@@ -1227,7 +1228,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                         key={cat.id}
                         onClick={() => handleSelectVodCategory(cat)}
                         className={`whitespace-nowrap px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 border cursor-pointer ${isSelected ? 'text-white' : 'bg-[#121622] text-slate-300 hover:text-white hover:bg-slate-800 border-slate-800'}`}
-                        style={isSelected ? { background: accent, borderColor: accent, boxShadow: `0 8px 20px -6px ${hexWithAlpha(accent, 0.5)}` } : {}}
+                        style={isSelected ? { background: accent, borderColor: accent } : {}}
                       >
                         <Folder className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-slate-400'}`} />
                         <span>{cat.name}</span>
@@ -1243,7 +1244,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
                   <Film className="w-4 h-4" style={{ color: accent }} />
                   <span>
-                    {searchQuery ? 'Resultados da Busca' : selectedVodCat ? selectedVodCat.name : getTabLabel('movies')} ({displayedMovies.length})
+                    {searchQuery ? 'Resultados' : selectedVodCat ? selectedVodCat.name : getTabLabel('movies')} ({displayedMovies.length})
                   </span>
                 </h3>
                 {loadingStreams && (
@@ -1296,9 +1297,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
               {visibleMovies.length < displayedMovies.length && (
                 <div className="p-4 bg-[#0e111a] rounded-xl border border-slate-800 flex items-center justify-between gap-3">
-                  <span className="text-xs text-slate-400">Exibindo <strong>{visibleMovies.length}</strong> de <strong>{displayedMovies.length}</strong> filmes</span>
+                  <span className="text-xs text-slate-400">Exibindo <strong>{visibleMovies.length}</strong> de <strong>{displayedMovies.length}</strong></span>
                   <button onClick={() => setMovieDisplayLimit((prev) => prev + 48)} className="px-4 py-2 rounded-xl text-white font-bold text-xs transition cursor-pointer" style={{ background: accent }}>
-                    Carregar Mais Filmes (+48)
+                    Carregar Mais (+48)
                   </button>
                 </div>
               )}
@@ -1343,7 +1344,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
                   <PlaySquare className="w-4 h-4" style={{ color: accent }} />
                   <span>
-                    {searchQuery ? 'Resultados da Busca' : selectedSeriesCat ? selectedSeriesCat.name : getTabLabel('series')} ({displayedSeries.length})
+                    {searchQuery ? 'Resultados' : selectedSeriesCat ? selectedSeriesCat.name : getTabLabel('series')} ({displayedSeries.length})
                   </span>
                 </h3>
                 {loadingStreams && (
@@ -1393,9 +1394,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
               {visibleSeries.length < displayedSeries.length && (
                 <div className="p-4 bg-[#0e111a] rounded-xl border border-slate-800 flex items-center justify-between gap-3">
-                  <span className="text-xs text-slate-400">Exibindo <strong>{visibleSeries.length}</strong> de <strong>{displayedSeries.length}</strong> séries</span>
+                  <span className="text-xs text-slate-400">Exibindo <strong>{visibleSeries.length}</strong> de <strong>{displayedSeries.length}</strong></span>
                   <button onClick={() => setSeriesDisplayLimit((prev) => prev + 48)} className="px-4 py-2 rounded-xl text-white font-bold text-xs transition cursor-pointer" style={{ background: accent }}>
-                    Carregar Mais Séries (+48)
+                    Carregar Mais (+48)
                   </button>
                 </div>
               )}
@@ -1462,12 +1463,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 {loadingStreams ? (
                   <div className="py-16 text-center bg-[#0e111a] rounded-2xl border border-slate-800 shadow-lg">
                     <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3" style={{ color: accent }} />
-                    <p className="text-sm text-slate-200 font-bold">Carregando canais da pasta...</p>
+                    <p className="text-sm text-slate-200 font-bold">Carregando canais...</p>
                   </div>
                 ) : channelsForSelectedCategory.length === 0 ? (
                   <div className="text-center py-12 bg-[#0e111a] rounded-2xl border border-slate-800">
                     <Tv className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-                    <p className="text-sm text-slate-400 font-medium">Nenhum canal encontrado nesta categoria.</p>
+                    <p className="text-sm text-slate-400 font-medium">Nenhum canal encontrado.</p>
                   </div>
                 ) : (
                   <div className="bg-[#0c0f17] rounded-2xl border border-slate-800 overflow-hidden divide-y divide-slate-800/60 shadow-lg">
@@ -1504,7 +1505,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
                     {visibleChannels.length < channelsForSelectedCategory.length && (
                       <div className="p-4 bg-[#090c13] text-center flex flex-col sm:flex-row items-center justify-between gap-3">
-                        <span className="text-xs text-slate-400">Exibindo <strong>{visibleChannels.length}</strong> de <strong>{channelsForSelectedCategory.length}</strong> canais</span>
+                        <span className="text-xs text-slate-400">Exibindo <strong>{visibleChannels.length}</strong> de <strong>{channelsForSelectedCategory.length}</strong></span>
                         <div className="flex items-center gap-2">
                           <button onClick={() => setChannelDisplayLimit((prev) => prev + 100)} className="px-4 py-2 rounded-xl text-white font-bold text-xs transition cursor-pointer" style={{ background: accent }}>
                             Carregar Mais (+100)
@@ -1589,7 +1590,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         )}
       </main>
 
-      {/* Bottom nav dinâmica */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[#08080c]/95 backdrop-blur-lg border-t border-slate-800/80 shadow-2xl">
         <div className="max-w-md mx-auto flex items-center justify-around py-2 px-1">
           {visibleTabs.map((tab) => {
@@ -1672,7 +1672,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     style={{ background: hexWithAlpha(accent, 0.2), borderColor: hexWithAlpha(accent, 0.4), color: accent }}
                   >
                     <Code2 className="w-4 h-4" />
-                    <span>Voltar ao Studio / Admin</span>
+                    <span>Voltar ao Studio</span>
                   </button>
                 )}
 
