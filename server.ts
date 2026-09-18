@@ -93,9 +93,17 @@ interface ClientTabConfig {
   visible: boolean;
 }
 
+interface ClientBranding {
+  appName: string;
+  accentColor: string;
+  logoUrl: string;
+  footerText: string;
+}
+
 interface SystemSettings {
   allowPublicRegistration: boolean;
   clientTabs?: ClientTabConfig[];
+  branding?: ClientBranding;
 }
 
 const DEFAULT_CLIENT_TABS: ClientTabConfig[] = [
@@ -104,6 +112,13 @@ const DEFAULT_CLIENT_TABS: ClientTabConfig[] = [
   { id: 'live', label: 'TV AO VIVO', visible: true },
   { id: 'settings', label: 'CONFIGURAÇÕES', visible: true },
 ];
+
+const DEFAULT_BRANDING: ClientBranding = {
+  appName: 'RPR TV',
+  accentColor: '#dc2626',
+  logoUrl: '',
+  footerText: 'Transmissão HD • Canais ao Vivo • Player Rápido',
+};
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
@@ -125,12 +140,17 @@ function loadSettings(): SystemSettings {
       if (!parsed.clientTabs || !Array.isArray(parsed.clientTabs)) {
         parsed.clientTabs = DEFAULT_CLIENT_TABS;
       }
+      if (!parsed.branding || typeof parsed.branding !== 'object') {
+        parsed.branding = DEFAULT_BRANDING;
+      } else {
+        parsed.branding = { ...DEFAULT_BRANDING, ...parsed.branding };
+      }
       return parsed;
     }
   } catch (e) {
     console.error("[Auth] Erro ao ler settings.json:", e);
   }
-  return { allowPublicRegistration: true, clientTabs: DEFAULT_CLIENT_TABS };
+  return { allowPublicRegistration: true, clientTabs: DEFAULT_CLIENT_TABS, branding: DEFAULT_BRANDING };
 }
 
 function saveSettings(settings: SystemSettings) {
@@ -179,7 +199,6 @@ function loadUsers(): StoredUser[] {
     console.error("[Auth] Erro ao ler users.json:", e);
   }
 
-  // Contas padrão iniciais — só criadas quando o arquivo não existe
   const defaultSalt = crypto.randomBytes(16).toString("hex");
   const defaultAdmin: StoredUser = {
     id: "user_admin",
@@ -360,6 +379,7 @@ app.get("/api/client-config", (req, res) => {
   return res.json({
     success: true,
     clientTabs: settings.clientTabs || DEFAULT_CLIENT_TABS,
+    branding: settings.branding || DEFAULT_BRANDING,
   });
 });
 
@@ -860,7 +880,6 @@ app.put("/api/admin/users/:id", (req, res) => {
     currentUser.playlistName = typeof playlistName === "string" && playlistName.trim() ? playlistName.trim() : (currentUser.playlistUrl ? "Lista IPTV" : undefined);
   }
 
-  // Anotações internas do AdminMaster sobre o cliente (não visíveis ao usuário)
   if (notes !== undefined) {
     const cleanNotes = typeof notes === "string" && notes.trim() ? notes.trim() : undefined;
     currentUser.notes = cleanNotes;
@@ -985,7 +1004,7 @@ app.post("/api/admin/settings", (req, res) => {
     return res.status(403).json({ success: false, error: error || "Não autorizado." });
   }
 
-  const { allowPublicRegistration, clientTabs } = req.body;
+  const { allowPublicRegistration, clientTabs, branding } = req.body;
   const settings = loadSettings();
 
   if (typeof allowPublicRegistration === "boolean") {
@@ -1001,6 +1020,24 @@ app.post("/api/admin/settings", (req, res) => {
         label: typeof t.label === 'string' && t.label.trim() ? t.label.trim().slice(0, 20) : t.id.toUpperCase(),
         visible: !!t.visible,
       }));
+  }
+
+  if (branding && typeof branding === 'object') {
+    const current = settings.branding || DEFAULT_BRANDING;
+    settings.branding = {
+      appName: typeof branding.appName === 'string' && branding.appName.trim()
+        ? branding.appName.trim().slice(0, 30)
+        : current.appName,
+      accentColor: typeof branding.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(branding.accentColor)
+        ? branding.accentColor
+        : current.accentColor,
+      logoUrl: typeof branding.logoUrl === 'string'
+        ? branding.logoUrl.slice(0, 500000)
+        : current.logoUrl,
+      footerText: typeof branding.footerText === 'string'
+        ? branding.footerText.trim().slice(0, 80)
+        : current.footerText,
+    };
   }
 
   saveSettings(settings);
