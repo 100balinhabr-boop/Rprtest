@@ -31,9 +31,10 @@ interface StoredUser {
   playlistUrl?: string;
   playlistName?: string;
   playlistUpdatedAt?: string;
-  expirationDate?: string | null; // Data de vencimento YYYY-MM-DD ou ISO
-  createdBy?: string; // ID ou username de quem cadastrou
+  expirationDate?: string | null;
+  createdBy?: string;
   createdByName?: string;
+  notes?: string;
 }
 
 function normalizeRole(role?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' {
@@ -43,7 +44,7 @@ function normalizeRole(role?: string): 'AdminMaster' | 'AdminRevenda' | 'Usuario
 }
 
 function isDateExpired(dateStr?: string | null): boolean {
-  if (!dateStr) return false; // Sem data = vitalício / sem vencimento
+  if (!dateStr) return false;
   let timestamp: number;
   if (dateStr.length === 10) {
     timestamp = new Date(`${dateStr}T23:59:59.999`).getTime();
@@ -82,12 +83,27 @@ function formatSafeUser(u: StoredUser) {
     expirationDate: u.expirationDate !== undefined ? u.expirationDate : null,
     createdBy: u.createdBy,
     createdByName: u.createdByName,
+    notes: u.notes,
   };
+}
+
+interface ClientTabConfig {
+  id: 'movies' | 'series' | 'live' | 'settings';
+  label: string;
+  visible: boolean;
 }
 
 interface SystemSettings {
   allowPublicRegistration: boolean;
+  clientTabs?: ClientTabConfig[];
 }
+
+const DEFAULT_CLIENT_TABS: ClientTabConfig[] = [
+  { id: 'movies', label: 'FILMES', visible: true },
+  { id: 'series', label: 'SÉRIES', visible: true },
+  { id: 'live', label: 'TV AO VIVO', visible: true },
+  { id: 'settings', label: 'CONFIGURAÇÕES', visible: true },
+];
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
@@ -105,12 +121,16 @@ function loadSettings(): SystemSettings {
     ensureDataDir();
     if (fs.existsSync(SETTINGS_FILE)) {
       const raw = fs.readFileSync(SETTINGS_FILE, "utf-8");
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (!parsed.clientTabs || !Array.isArray(parsed.clientTabs)) {
+        parsed.clientTabs = DEFAULT_CLIENT_TABS;
+      }
+      return parsed;
     }
   } catch (e) {
     console.error("[Auth] Erro ao ler settings.json:", e);
   }
-  return { allowPublicRegistration: true };
+  return { allowPublicRegistration: true, clientTabs: DEFAULT_CLIENT_TABS };
 }
 
 function saveSettings(settings: SystemSettings) {
@@ -149,25 +169,6 @@ function loadUsers(): StoredUser[] {
             expirationDate: u.expirationDate !== undefined ? u.expirationDate : null,
           };
         });
-        // Se não houver cliente comum pré-configurado, adiciona para testes rápidos
-        if (!normalized.some((u) => u.username === "cliente")) {
-          const clientSalt = crypto.randomBytes(16).toString("hex");
-          const in30Days = new Date();
-          in30Days.setDate(in30Days.getDate() + 30);
-          normalized.push({
-            id: "user_cliente_demo",
-            username: "cliente",
-            name: "Cliente Final",
-            email: "cliente@iptv.local",
-            salt: clientSalt,
-            passwordHash: hashPassword("123456", clientSalt),
-            role: "UsuarioComum",
-            createdAt: new Date().toISOString(),
-            isBlocked: false,
-            expirationDate: in30Days.toISOString().split("T")[0],
-          });
-          changed = true;
-        }
         if (changed) {
           saveUsers(normalized);
         }
@@ -178,7 +179,7 @@ function loadUsers(): StoredUser[] {
     console.error("[Auth] Erro ao ler users.json:", e);
   }
 
-  // Contas padrão iniciais
+  // Contas padrão iniciais — só criadas quando o arquivo não existe
   const defaultSalt = crypto.randomBytes(16).toString("hex");
   const defaultAdmin: StoredUser = {
     id: "user_admin",
@@ -259,7 +260,6 @@ function saveSessions(map: Map<string, { userId: string; expiresAt: number }>) {
   }
 }
 
-// Mapa de sessões ativas persistentes
 const sessions = loadSessions();
 
 function getAuthenticatedAdmin(req: express.Request): { 
@@ -275,7 +275,6 @@ function getAuthenticatedAdmin(req: express.Request): {
     return { adminUser: null, isMaster: false, isRevenda: false, error: "Token de autenticação não fornecido." };
   }
 
-  // Fallback seguro de administrador master local
   if (token === "token_local_admin") {
     const users = loadUsers();
     const admin = users.find(u => normalizeRole(u.role) === "AdminMaster" && !u.isBlocked);
@@ -298,7 +297,6 @@ function getAuthenticatedAdmin(req: express.Request): {
     return { adminUser: null, isMaster: false, isRevenda: false, error: "Acesso restrito apenas a AdminMaster e AdminRevenda." };
   }
 
-  // Se for revendedor com vencimento configurado e expirou
   if (role === "AdminRevenda" && isDateExpired(user.expirationDate)) {
     return { 
       adminUser: null, 
@@ -339,7 +337,6 @@ function getAuthenticatedUser(req: express.Request): { user: StoredUser | null; 
     return { user: null, error: "Usuário não encontrado ou bloqueado." };
   }
 
-  // Verifica data de vencimento (aplica-se a UsuarioComum e AdminRevenda)
   const role = normalizeRole(user.role);
   if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
     return { 
@@ -352,13 +349,20 @@ function getAuthenticatedUser(req: express.Request): { user: StoredUser | null; 
   return { user };
 }
 
-// Auth Endpoint: Obter configurações públicas de auth
 app.get("/api/auth/settings", (req, res) => {
   const settings = loadSettings();
   return res.json({ success: true, settings });
 });
 
-// Auth Endpoint: Login
+// Endpoint público — config visual do app do cliente (sem auth, dados não-sensíveis)
+app.get("/api/client-config", (req, res) => {
+  const settings = loadSettings();
+  return res.json({
+    success: true,
+    clientTabs: settings.clientTabs || DEFAULT_CLIENT_TABS,
+  });
+});
+
 app.post("/api/auth/login", (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
@@ -378,7 +382,6 @@ app.post("/api/auth/login", (req, res) => {
     });
   }
 
-  // Verifica data de vencimento (AdminMaster não expira)
   const role = normalizeRole(user.role);
   if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
     return res.status(403).json({
@@ -395,7 +398,7 @@ app.post("/api/auth/login", (req, res) => {
   }
 
   const token = crypto.randomBytes(32).toString("hex");
-  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 dias
+  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
   sessions.set(token, { userId: user.id, expiresAt });
   saveSessions(sessions);
 
@@ -407,7 +410,6 @@ app.post("/api/auth/login", (req, res) => {
   });
 });
 
-// Auth Endpoint: Cadastro de nova conta pública
 app.post("/api/auth/register", (req, res) => {
   const { username, password, name, email } = req.body;
 
@@ -435,7 +437,6 @@ app.post("/api/auth/register", (req, res) => {
     return res.status(409).json({ success: false, error: "Este nome de usuário já está em uso. Escolha outro." });
   }
 
-  // Novo cadastro público: conceder 30 dias de acesso padrão
   const trialDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   const salt = crypto.randomBytes(16).toString("hex");
@@ -469,7 +470,6 @@ app.post("/api/auth/register", (req, res) => {
   });
 });
 
-// Auth Endpoint: Verificar sessão atual
 app.get("/api/auth/me", (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.query.token as string);
@@ -478,7 +478,6 @@ app.get("/api/auth/me", (req, res) => {
     return res.status(401).json({ success: false, error: "Token não fornecido." });
   }
 
-  // Fallback seguro de administrador master
   if (token === "token_local_admin") {
     const users = loadUsers();
     const admin = users.find(u => normalizeRole(u.role) === "AdminMaster" && !u.isBlocked);
@@ -529,7 +528,6 @@ app.get("/api/auth/me", (req, res) => {
   });
 });
 
-// Auth Endpoint: Logout
 app.post("/api/auth/logout", (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.body?.token as string);
@@ -541,10 +539,9 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 // ----------------------------------------------------
-// User Saved Playlist Endpoints (Salva lista vinculada ao usuário)
+// User Saved Playlist Endpoints
 // ----------------------------------------------------
 
-// Obter a lista salva do usuário atual
 app.get("/api/user/playlist", (req, res) => {
   const { user, error } = getAuthenticatedUser(req);
   if (error || !user) {
@@ -559,7 +556,6 @@ app.get("/api/user/playlist", (req, res) => {
   });
 });
 
-// Salvar ou atualizar a lista M3U do usuário atual
 app.post("/api/user/playlist", (req, res) => {
   const { user, error } = getAuthenticatedUser(req);
   if (error || !user) {
@@ -592,7 +588,6 @@ app.post("/api/user/playlist", (req, res) => {
   });
 });
 
-// Remover a lista salva do usuário atual
 app.delete("/api/user/playlist", (req, res) => {
   const { user, error } = getAuthenticatedUser(req);
   if (error || !user) {
@@ -619,7 +614,6 @@ app.delete("/api/user/playlist", (req, res) => {
 // Admin Management Endpoints
 // ----------------------------------------------------
 
-// Listar todos os usuários cadastrados
 app.get("/api/admin/users", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
@@ -639,14 +633,13 @@ app.get("/api/admin/users", (req, res) => {
   });
 });
 
-// Criar novo usuário manualmente pelo Administrador
 app.post("/api/admin/users", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
     return res.status(403).json({ success: false, error: error || "Não autorizado." });
   }
 
-  const { username, password, name, email, role, playlistUrl, playlistName, expirationDate } = req.body;
+  const { username, password, name, email, role, playlistUrl, playlistName, expirationDate, notes } = req.body;
 
   if (!username || typeof username !== "string" || username.trim().length < 3) {
     return res.status(400).json({ success: false, error: "O nome de usuário deve ter pelo menos 3 caracteres." });
@@ -659,7 +652,6 @@ app.post("/api/admin/users", (req, res) => {
   const cleanUsername = username.trim().toLowerCase();
   const cleanName = (name && typeof name === "string" && name.trim().length >= 2) ? name.trim() : username.trim();
 
-  // Restrição de Hierarquia: AdminRevenda só pode cadastrar UsuarioComum
   let assignedRole: 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum';
   if (isRevenda) {
     if (role && normalizeRole(role) !== "UsuarioComum") {
@@ -670,7 +662,6 @@ app.post("/api/admin/users", (req, res) => {
     }
     assignedRole = "UsuarioComum";
   } else {
-    // AdminMaster pode criar qualquer um dos cargos
     assignedRole = normalizeRole(role);
   }
 
@@ -704,6 +695,7 @@ app.post("/api/admin/users", (req, res) => {
     expirationDate: cleanExpirationDate,
     createdBy: adminUser.username,
     createdByName: adminUser.name,
+    notes: typeof notes === "string" && notes.trim() ? notes.trim() : undefined,
   };
 
   users.push(newUser);
@@ -717,7 +709,6 @@ app.post("/api/admin/users", (req, res) => {
   });
 });
 
-// Bloquear ou Desbloquear usuário
 app.post("/api/admin/users/:id/toggle-block", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
@@ -737,12 +728,10 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
 
   const targetRole = normalizeRole(users[targetIndex].role);
 
-  // Não pode bloquear AdminMaster
   if (targetRole === "AdminMaster") {
     return res.status(400).json({ success: false, error: "Não é permitido bloquear a conta do AdminMaster." });
   }
 
-  // AdminRevenda só pode gerenciar UsuarioComum
   if (isRevenda && targetRole !== "UsuarioComum") {
     return res.status(403).json({
       success: false,
@@ -754,7 +743,6 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
   users[targetIndex].isBlocked = nowBlocked;
   saveUsers(users);
 
-  // Se o usuário foi bloqueado, encerra imediatamente todas as sessões ativas dele
   if (nowBlocked) {
     for (const [token, session] of sessions.entries()) {
       if (session.userId === targetId) {
@@ -773,7 +761,6 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
   });
 });
 
-// Editar dados e credenciais do usuário (incluindo data de vencimento e cargo)
 app.put("/api/admin/users/:id", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
@@ -781,7 +768,7 @@ app.put("/api/admin/users/:id", (req, res) => {
   }
 
   const targetId = req.params.id;
-  const { name, username, email, role, password, isBlocked, playlistUrl, playlistName, expirationDate } = req.body;
+  const { name, username, email, role, password, isBlocked, playlistUrl, playlistName, expirationDate, notes } = req.body;
 
   const users = loadUsers();
   const targetIndex = users.findIndex(u => u.id === targetId);
@@ -792,7 +779,6 @@ app.put("/api/admin/users/:id", (req, res) => {
   const currentUser = users[targetIndex];
   const targetRole = normalizeRole(currentUser.role);
 
-  // Validação de permissões da hierarquia:
   if (targetRole === "AdminMaster" && !isMaster) {
     return res.status(403).json({ success: false, error: "Você não tem permissão para alterar contas de AdminMaster." });
   }
@@ -801,12 +787,10 @@ app.put("/api/admin/users/:id", (req, res) => {
     return res.status(403).json({ success: false, error: "AdminRevenda não pode alterar dados de outros revendedores." });
   }
 
-  // AdminRevenda não pode alterar cargos
   if (isRevenda && role !== undefined && normalizeRole(role) !== "UsuarioComum") {
     return res.status(403).json({ success: false, error: "AdminRevenda não tem permissão para alterar cargos ou promover usuários." });
   }
 
-  // Se o username foi alterado, valida e checa unicidade
   if (username && typeof username === "string") {
     const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, "");
     if (cleanUsername.length < 3) {
@@ -819,17 +803,14 @@ app.put("/api/admin/users/:id", (req, res) => {
     currentUser.username = cleanUsername;
   }
 
-  // Nome de exibição
   if (name && typeof name === "string" && name.trim().length > 0) {
     currentUser.name = name.trim();
   }
 
-  // Email
   if (email !== undefined) {
     currentUser.email = typeof email === "string" && email.trim().length > 0 ? email.trim() : undefined;
   }
 
-  // Alteração de Cargo (Apenas AdminMaster pode alterar cargos livremente)
   if (role !== undefined && isMaster) {
     const normalizedNewRole = normalizeRole(role);
     if (targetId === adminUser.id && normalizedNewRole !== "AdminMaster") {
@@ -838,7 +819,6 @@ app.put("/api/admin/users/:id", (req, res) => {
     currentUser.role = normalizedNewRole;
   }
 
-  // Alteração da Data de Vencimento
   if (expirationDate !== undefined) {
     if (!expirationDate || expirationDate === "vitalicio" || String(expirationDate).trim() === "") {
       currentUser.expirationDate = null;
@@ -847,7 +827,6 @@ app.put("/api/admin/users/:id", (req, res) => {
     }
   }
 
-  // Status de bloqueio direto
   if (typeof isBlocked === "boolean") {
     if (targetId === adminUser.id && isBlocked) {
       return res.status(400).json({ success: false, error: "Você não pode bloquear a sua própria conta." });
@@ -863,7 +842,6 @@ app.put("/api/admin/users/:id", (req, res) => {
     }
   }
 
-  // Redefinição de senha
   if (password && typeof password === "string" && password.trim().length > 0) {
     if (password.trim().length < 4) {
       return res.status(400).json({ success: false, error: "A nova senha deve ter no mínimo 4 caracteres." });
@@ -873,7 +851,6 @@ app.put("/api/admin/users/:id", (req, res) => {
     currentUser.passwordHash = hashPassword(password.trim(), newSalt);
   }
 
-  // Atualização da lista M3U do usuário pelo Admin
   if (playlistUrl !== undefined) {
     const cleanUrl = typeof playlistUrl === "string" && playlistUrl.trim() ? playlistUrl.trim() : undefined;
     currentUser.playlistUrl = cleanUrl;
@@ -881,6 +858,12 @@ app.put("/api/admin/users/:id", (req, res) => {
   }
   if (playlistName !== undefined) {
     currentUser.playlistName = typeof playlistName === "string" && playlistName.trim() ? playlistName.trim() : (currentUser.playlistUrl ? "Lista IPTV" : undefined);
+  }
+
+  // Anotações internas do AdminMaster sobre o cliente (não visíveis ao usuário)
+  if (notes !== undefined) {
+    const cleanNotes = typeof notes === "string" && notes.trim() ? notes.trim() : undefined;
+    currentUser.notes = cleanNotes;
   }
 
   users[targetIndex] = currentUser;
@@ -894,7 +877,6 @@ app.put("/api/admin/users/:id", (req, res) => {
   });
 });
 
-// Ação Rápida: Renovar data de vencimento (+dias ou data específica)
 app.post("/api/admin/users/:id/renew", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
@@ -911,7 +893,6 @@ app.post("/api/admin/users/:id/renew", (req, res) => {
   const currentUser = users[targetIndex];
   const targetRole = normalizeRole(currentUser.role);
 
-  // AdminRevenda só pode renovar UsuarioComum
   if (isRevenda && targetRole !== "UsuarioComum") {
     return res.status(403).json({ success: false, error: "AdminRevenda só pode renovar o vencimento de Usuários Comuns." });
   }
@@ -922,7 +903,6 @@ app.post("/api/admin/users/:id/renew", (req, res) => {
   if (newExpirationDate !== undefined) {
     finalDateStr = (!newExpirationDate || newExpirationDate === "vitalicio") ? null : String(newExpirationDate).trim();
   } else if (typeof days === "number" && days > 0) {
-    // Se a data atual ainda é válida (futuro), soma a partir dela. Se já expirou ou é nula, soma a partir de hoje.
     let baseTime = Date.now();
     if (currentUser.expirationDate && !isDateExpired(currentUser.expirationDate)) {
       const existingTime = new Date(`${currentUser.expirationDate.slice(0, 10)}T23:59:59`).getTime();
@@ -952,7 +932,6 @@ app.post("/api/admin/users/:id/renew", (req, res) => {
   });
 });
 
-// Excluir usuário definitivamente
 app.delete("/api/admin/users/:id", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
@@ -972,13 +951,10 @@ app.delete("/api/admin/users/:id", (req, res) => {
 
   const targetRole = normalizeRole(target.role);
 
-  // Não pode excluir AdminMaster
   if (targetRole === "AdminMaster") {
     return res.status(400).json({ success: false, error: "Não é permitido excluir a conta do AdminMaster principal." });
   }
 
-  // AdminMaster pode remover AdminRevenda e UsuarioComum
-  // AdminRevenda NÃO pode remover AdminRevenda nem AdminMaster
   if (isRevenda && targetRole !== "UsuarioComum") {
     return res.status(403).json({
       success: false,
@@ -989,7 +965,6 @@ app.delete("/api/admin/users/:id", (req, res) => {
   users = users.filter(u => u.id !== targetId);
   saveUsers(users);
 
-  // Encerra qualquer sessão ativa do usuário excluído
   for (const [token, session] of sessions.entries()) {
     if (session.userId === targetId) {
       sessions.delete(token);
@@ -1004,31 +979,39 @@ app.delete("/api/admin/users/:id", (req, res) => {
   });
 });
 
-// Atualizar configurações administrativas (Ex: permitir ou bloquear novos cadastros públicos)
 app.post("/api/admin/settings", (req, res) => {
   const { adminUser, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
     return res.status(403).json({ success: false, error: error || "Não autorizado." });
   }
 
-  const { allowPublicRegistration } = req.body;
+  const { allowPublicRegistration, clientTabs } = req.body;
   const settings = loadSettings();
 
   if (typeof allowPublicRegistration === "boolean") {
     settings.allowPublicRegistration = allowPublicRegistration;
-    saveSettings(settings);
   }
+
+  if (Array.isArray(clientTabs)) {
+    const validIds = ['movies', 'series', 'live', 'settings'];
+    settings.clientTabs = clientTabs
+      .filter((t: any) => t && validIds.includes(t.id))
+      .map((t: any) => ({
+        id: t.id,
+        label: typeof t.label === 'string' && t.label.trim() ? t.label.trim().slice(0, 20) : t.id.toUpperCase(),
+        visible: !!t.visible,
+      }));
+  }
+
+  saveSettings(settings);
 
   return res.json({
     success: true,
     settings,
-    message: settings.allowPublicRegistration
-      ? "Novos cadastros públicos estão permitidos."
-      : "Novos cadastros públicos foram desativados."
+    message: "Configurações atualizadas com sucesso."
   });
 });
 
-// Health check
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
@@ -1048,7 +1031,6 @@ interface ChannelGroup {
   count: number;
 }
 
-// Helper: Try to extract Xtream Codes credentials from URL
 function extractXtreamCredentials(urlStr: string) {
   try {
     const parsed = new URL(urlStr);
@@ -1059,18 +1041,16 @@ function extractXtreamCredentials(urlStr: string) {
       return { baseUrl, username, password };
     }
   } catch {
-    // Not a valid URL or error
   }
   return null;
 }
 
-// Endpoint: Proxy & smart load M3U playlist (resolves Mixed Content, CORS & Out-Of-Memory)
 app.post("/api/load-playlist", async (req, res) => {
   const { 
     url, 
-    maxChannels = 0, // 0 = Sem limites / Carregar lista inteira
+    maxChannels = 0,
     preferFormat = "m3u8",
-    mode = "all", // 'all' (Lista Inteira: TV + Filmes + Séries) | 'live' (Apenas TV ao Vivo) | 'vod' (Apenas VOD)
+    mode = "all",
     includeVod = true
   } = req.body;
 
@@ -1079,13 +1059,10 @@ app.post("/api/load-playlist", async (req, res) => {
   }
 
   const trimmedUrl = url.trim();
-  // Se maxChannels for 0, negativo ou não informado, permite até 100.000 itens (proteção de memória de sistema)
   const effectiveMax = (typeof maxChannels === "number" && maxChannels > 0) ? maxChannels : 100000;
 
-  // 1. Check if this is an Xtream Codes playlist
   const xtream = extractXtreamCredentials(trimmedUrl);
   
-  // Se o usuário selecionou APENAS TV ao Vivo ('live'), a API Xtream Codes é perfeita e ultrarrápida
   if (xtream && mode === "live") {
     try {
       console.log(`[Xtream API] Carregando canais ao vivo de ${xtream.baseUrl} para o usuário ${xtream.username}...`);
@@ -1158,14 +1135,13 @@ app.post("/api/load-playlist", async (req, res) => {
     }
   }
 
-  // 2. Generic Streaming M3U Parser (Lê a lista inteira, TV + Filmes + Séries, seguro contra listas de 100k+ linhas)
   try {
     console.log(`[M3U Streaming] Baixando e processando M3U completa (mode: ${mode}, max: ${effectiveMax}): ${trimmedUrl}`);
     const response = await fetch(trimmedUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 IPTVSmarters"
       },
-      signal: AbortSignal.timeout(90000) // 90s para permitir o download de listas gigantescas inteiras
+      signal: AbortSignal.timeout(90000)
     });
 
     if (!response.ok) {
@@ -1226,7 +1202,6 @@ app.post("/api/load-playlist", async (req, res) => {
             tvgName: tvgNameMatch ? tvgNameMatch[1] : undefined,
           };
         } else if (!line.startsWith("#") && currentMetadata) {
-          // Stream URL
           const streamUrl = line;
           const upperGroup = (currentMetadata.group || "").toUpperCase();
           const upperUrl = streamUrl.toUpperCase();
@@ -1235,7 +1210,6 @@ app.post("/api/load-playlist", async (req, res) => {
           const isSerie = upperUrl.includes("/SERIES/") || upperGroup.includes("SERIE") || upperGroup.includes("TEMPORADA") || upperGroup.includes("NOVELA");
           const isVod = isMovie || isSerie;
 
-          // Validação de filtro pelo modo escolhido pelo usuário
           let shouldInclude = true;
           if (mode === "live" && isVod) {
             shouldInclude = false;
@@ -1308,7 +1282,7 @@ app.post("/api/load-playlist", async (req, res) => {
 });
 
 // ----------------------------------------------------
-// Smart On-Demand Xtream Codes Engine (Smarters/TiviMate Style)
+// Smart On-Demand Xtream Codes Engine
 // ----------------------------------------------------
 
 interface XtreamCacheItem {
@@ -1317,7 +1291,7 @@ interface XtreamCacheItem {
 }
 
 const xtreamMemoryCache = new Map<string, XtreamCacheItem>();
-const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos de cache em memória
+const CACHE_TTL_MS = 15 * 60 * 1000;
 
 function getFromXtreamCache<T>(key: string): T | null {
   const item = xtreamMemoryCache.get(key);
@@ -1352,7 +1326,6 @@ function parseXtreamCredentialsFromReq(body: any) {
   return null;
 }
 
-// 1. Obter Categorias Sob Demanda (TV, Filmes ou Séries) - Resposta em ~100ms
 app.post("/api/xtream/categories", async (req, res) => {
   const xtream = parseXtreamCredentialsFromReq(req.body);
   if (!xtream) {
@@ -1399,7 +1372,6 @@ app.post("/api/xtream/categories", async (req, res) => {
   }
 });
 
-// 2. Obter Streams por Categoria Sob Demanda (TV, Filmes ou Séries) - Zero Travamento
 app.post("/api/xtream/streams", async (req, res) => {
   const xtream = parseXtreamCredentialsFromReq(req.body);
   if (!xtream) {
@@ -1443,7 +1415,6 @@ app.post("/api/xtream/streams", async (req, res) => {
     }
   }
 
-  // Filtragem local se houver termo de busca
   let filtered = streams || [];
   if (search && typeof search === "string" && search.trim()) {
     const q = search.trim().toLowerCase();
@@ -1452,11 +1423,10 @@ app.post("/api/xtream/streams", async (req, res) => {
 
   const totalCount = filtered.length;
   const pageNum = Math.max(1, parseInt(String(page)) || 1);
-  const limitNum = Math.max(1, Math.min(500, parseInt(String(limit)) || 100));
+  const limitNum = Math.max(1, Math.min(5000, parseInt(String(limit)) || 100));
   const startIndex = (pageNum - 1) * limitNum;
   const pagedItems = filtered.slice(startIndex, startIndex + limitNum);
 
-  // Formatação dos itens para o modelo do aplicativo
   if (type === "live") {
     const ext = preferFormat === "m3u8" ? "m3u8" : "ts";
     const formattedChannels = pagedItems.map((s: any) => ({
@@ -1512,14 +1482,13 @@ app.post("/api/xtream/streams", async (req, res) => {
     });
   }
 
-  // Type === 'series'
   const formattedSeries = pagedItems.map((s: any) => ({
     id: `series_${s.series_id}`,
     seriesId: s.series_id,
     title: s.name || "Série",
     type: "series",
     posterUrl: s.cover || "https://images.unsplash.com/photo-1574375927938-d5a98e8ffe85?auto=format&fit=crop&w=600&q=80",
-    streamUrl: "", // Episódios obtidos sob demanda pelo modal de detalhes
+    streamUrl: "",
     rating: s.rating ? parseFloat(s.rating) : 4.8,
     year: s.releaseDate ? parseInt(s.releaseDate.slice(0, 4)) : 2024,
     genre: s.category_name || "Séries",
@@ -1540,7 +1509,6 @@ app.post("/api/xtream/streams", async (req, res) => {
   });
 });
 
-// 3. Obter Detalhes e Episódios de Séries Sob Demanda
 app.post("/api/xtream/series-info", async (req, res) => {
   const xtream = parseXtreamCredentialsFromReq(req.body);
   if (!xtream) {
@@ -1578,7 +1546,6 @@ app.post("/api/xtream/series-info", async (req, res) => {
   }
 });
 
-// Endpoint: Media Proxy to bypass Mixed Content (HTTP on HTTPS) and CORS in web preview
 app.get("/api/proxy-stream", async (req, res) => {
   const targetUrl = req.query.url as string;
   if (!targetUrl) {
@@ -1627,7 +1594,6 @@ app.get("/api/proxy-stream", async (req, res) => {
               return line;
             }
 
-            // It's a segment or sub-playlist URL
             try {
               const resolved = new URL(trimmed, finalBaseUrl).toString();
               return `/api/proxy-stream?url=${encodeURIComponent(resolved)}`;
@@ -1645,7 +1611,6 @@ app.get("/api/proxy-stream", async (req, res) => {
       }
     }
 
-    // Binary media stream (.ts segment or direct video)
     const headers: Record<string, string> = {
       "Content-Type": contentType || "video/mp2t",
       "Access-Control-Allow-Origin": "*",
@@ -1680,7 +1645,6 @@ app.get("/api/proxy-stream", async (req, res) => {
 });
 
 async function startServer() {
-  // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
