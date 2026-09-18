@@ -5,7 +5,8 @@ import {
   AlertCircle, CheckCircle, Calendar, Eye, EyeOff, Pencil, Tv,
   Clock, Crown, Briefcase, CalendarPlus, AlertTriangle,
   UserCheck, UserX, TrendingUp, LayoutDashboard, Settings as SettingsIcon,
-  LogOut, ChevronRight, Play, Menu, Shield, Sparkles, Copy, Check
+  LogOut, ChevronRight, Play, Menu, Shield, Sparkles, Check,
+  Palette, GripVertical, Save
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -13,6 +14,19 @@ interface AdminPanelProps {
   onClose: () => void;
   onGoToPlayer: () => void;
 }
+
+interface ClientTabConfig {
+  id: 'movies' | 'series' | 'live' | 'settings';
+  label: string;
+  visible: boolean;
+}
+
+const DEFAULT_CLIENT_TABS: ClientTabConfig[] = [
+  { id: 'movies', label: 'FILMES', visible: true },
+  { id: 'series', label: 'SÉRIES', visible: true },
+  { id: 'live', label: 'TV AO VIVO', visible: true },
+  { id: 'settings', label: 'CONFIGURAÇÕES', visible: true },
+];
 
 export const normalizeUserRole = (r?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' => {
   if (!r) return 'UsuarioComum';
@@ -41,7 +55,7 @@ export const getExpirationInfo = (expirationDate?: string | null) => {
   return { status: 'active' as const, label: `Até ${formatDateDisplay(expirationDate)}`, isExpired: false, isExpiring7: false };
 };
 
-type Section = 'dashboard' | 'clients' | 'revendas' | 'admins' | 'create' | 'settings';
+type Section = 'dashboard' | 'clients' | 'revendas' | 'admins' | 'create' | 'settings' | 'appearance';
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, onGoToPlayer }) => {
   const [section, setSection] = useState<Section>('dashboard');
@@ -54,6 +68,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const [allowRegistration, setAllowRegistration] = useState(true);
   const [settingLoading, setSettingLoading] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+
+  // Aparência — config dos botões do app cliente
+  const [clientTabs, setClientTabs] = useState<ClientTabConfig[]>(DEFAULT_CLIENT_TABS);
+  const [savingTabs, setSavingTabs] = useState(false);
 
   const currentAdminRole = normalizeUserRole(currentAdmin.role);
   const isMaster = currentAdminRole === 'AdminMaster';
@@ -108,6 +126,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
         setUsers(data.users);
         if (data.settings && typeof data.settings.allowPublicRegistration === 'boolean') {
           setAllowRegistration(data.settings.allowPublicRegistration);
+        }
+        if (data.settings && Array.isArray(data.settings.clientTabs) && data.settings.clientTabs.length > 0) {
+          setClientTabs(data.settings.clientTabs);
         }
       } else {
         setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao carregar usuários.' });
@@ -336,6 +357,57 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     }
   };
 
+  // ========== AÇÕES DA ABA APARÊNCIA ==========
+  const handleToggleTabVisible = (tabId: string) => {
+    setClientTabs(prev =>
+      prev.map(t => t.id === tabId ? { ...t, visible: !t.visible } : t)
+    );
+  };
+
+  const handleRenameTab = (tabId: string, newLabel: string) => {
+    setClientTabs(prev =>
+      prev.map(t => t.id === tabId ? { ...t, label: newLabel.slice(0, 20) } : t)
+    );
+  };
+
+  const handleMoveTab = (tabId: string, direction: 'up' | 'down') => {
+    setClientTabs(prev => {
+      const idx = prev.findIndex(t => t.id === tabId);
+      if (idx === -1) return prev;
+      const newIdx = direction === 'up' ? idx - 1 : idx + 1;
+      if (newIdx < 0 || newIdx >= prev.length) return prev;
+      const copy = [...prev];
+      [copy[idx], copy[newIdx]] = [copy[newIdx], copy[idx]];
+      return copy;
+    });
+  };
+
+  const handleSaveAppearance = async () => {
+    setSavingTabs(true);
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
+        body: JSON.stringify({ clientTabs }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFeedbackMsg({ type: 'success', text: 'Aparência atualizada! Os clientes verão a mudança ao recarregar.' });
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao salvar.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha ao salvar aparência.' });
+    } finally {
+      setSavingTabs(false);
+    }
+  };
+
+  const handleResetAppearance = () => {
+    setClientTabs(DEFAULT_CLIENT_TABS);
+    setFeedbackMsg({ type: 'success', text: 'Valores resetados. Clique em Salvar para aplicar.' });
+  };
+
   // Stats
   const totalUsers = users.length;
   const clientUsers = users.filter(u => normalizeUserRole(u.role) === 'UsuarioComum').length;
@@ -362,12 +434,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     { id: 'revendas' as Section, label: 'Revendas', icon: Briefcase, badge: revendaUsers, masterOnly: false },
     { id: 'admins' as Section, label: 'Admins', icon: Crown, badge: masterUsers, masterOnly: true },
     { id: 'create' as Section, label: 'Criar Usuário', icon: UserPlus, masterOnly: false },
+    { id: 'appearance' as Section, label: 'Aparência', icon: Palette, masterOnly: true },
     { id: 'settings' as Section, label: 'Configurações', icon: SettingsIcon, masterOnly: true },
   ];
 
   const sectionTitle = {
     dashboard: 'Dashboard', clients: 'Clientes', revendas: 'Revendas',
     admins: 'Admins Master', create: 'Criar Usuário', settings: 'Configurações',
+    appearance: 'Aparência do App',
   }[section];
 
   return (
@@ -499,6 +573,156 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {/* APARÊNCIA */}
+          {section === 'appearance' && isMaster && (
+            <div className="max-w-3xl mx-auto space-y-4">
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-purple-950/30 to-[#0f0f17] border border-purple-800/40">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-purple-500/20 border border-purple-500/40 flex items-center justify-center">
+                    <Palette className="w-6 h-6 text-purple-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white">Aparência do App do Cliente</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Edite os botões da barra inferior do app. Os clientes verão a mudança ao recarregar o app.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-800/60 flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                    Botões da Barra Inferior
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    {clientTabs.filter(t => t.visible).length} de {clientTabs.length} visíveis
+                  </span>
+                </div>
+
+                <div className="divide-y divide-slate-800/60">
+                  {clientTabs.map((tab, idx) => {
+                    const isFirst = idx === 0;
+                    const isLast = idx === clientTabs.length - 1;
+                    const isFixed = tab.id === 'live' || tab.id === 'settings';
+
+                    return (
+                      <div key={tab.id} className="p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                        {/* Mover */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleMoveTab(tab.id, 'up')}
+                            disabled={isFirst}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Mover pra cima"
+                          >
+                            ▲
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleMoveTab(tab.id, 'down')}
+                            disabled={isLast}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Mover pra baixo"
+                          >
+                            ▼
+                          </button>
+                          <GripVertical className="w-4 h-4 text-slate-600 hidden sm:block" />
+                        </div>
+
+                        {/* Ícone do botão */}
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                          tab.visible
+                            ? 'bg-red-600/20 border-red-500/40 text-red-400'
+                            : 'bg-slate-800 border-slate-700 text-slate-500'
+                        }`}>
+                          {tab.id === 'movies' && <Tv className="w-5 h-5" />}
+                          {tab.id === 'series' && <Play className="w-5 h-5" />}
+                          {tab.id === 'live' && <Play className="w-5 h-5" />}
+                          {tab.id === 'settings' && <SettingsIcon className="w-5 h-5" />}
+                        </div>
+
+                        {/* Input do nome */}
+                        <div className="flex-1 min-w-0">
+                          <label className="block text-[10px] text-slate-500 font-semibold uppercase tracking-wide mb-1">
+                            Nome do botão
+                          </label>
+                          <input
+                            type="text"
+                            value={tab.label}
+                            onChange={(e) => handleRenameTab(tab.id, e.target.value.toUpperCase())}
+                            maxLength={20}
+                            disabled={isFixed}
+                            placeholder="NOME"
+                            className={`w-full bg-[#15151f] border rounded-xl px-3 py-2 text-sm font-bold text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-red-500 ${
+                              isFixed ? 'border-slate-800 opacity-60 cursor-not-allowed' : 'border-slate-700/80'
+                            }`}
+                          />
+                          <div className="flex items-center justify-between mt-1">
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              {tab.id} • {tab.label.length}/20
+                            </span>
+                            {isFixed && (
+                              <span className="text-[10px] text-amber-400 font-semibold">
+                                Não pode ser renomeado/oculto
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Toggle visível */}
+                        <button
+                          type="button"
+                          onClick={() => !isFixed && handleToggleTabVisible(tab.id)}
+                          disabled={isFixed}
+                          className={`shrink-0 px-3 py-2 rounded-xl font-bold text-[11px] uppercase transition border ${
+                            isFixed
+                              ? 'bg-slate-800/40 text-slate-500 border-slate-800 cursor-not-allowed'
+                              : tab.visible
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                              : 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30'
+                          }`}
+                        >
+                          {tab.visible ? 'Visível' : 'Oculto'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="px-5 py-4 bg-[#0b0b12] border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={handleResetAppearance}
+                    className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+                  >
+                    Restaurar Padrão
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveAppearance}
+                    disabled={savingTabs}
+                    className="px-5 py-2.5 rounded-xl text-sm font-bold bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-400 text-white shadow-lg shadow-red-600/30 flex items-center gap-2 disabled:opacity-50"
+                  >
+                    {savingTabs ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Save className="w-4 h-4" />
+                    )}
+                    {savingTabs ? 'Salvando...' : 'Salvar Alterações'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-blue-950/20 border border-blue-800/40">
+                <p className="text-xs text-blue-200 leading-relaxed">
+                  💡 <strong>Dica:</strong> Os botões <strong>TV AO VIVO</strong> e <strong>CONFIGURAÇÕES</strong> são fixos — não podem ser renomeados nem ocultados, para garantir que o cliente sempre tenha acesso ao conteúdo principal e ao perfil dele.
+                </p>
+              </div>
             </div>
           )}
 
