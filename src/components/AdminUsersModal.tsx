@@ -1,1431 +1,2001 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import Hls from 'hls.js';
-import { Channel, UserAccount } from '../types';
+import React, { useState, useEffect } from 'react';
+import { UserAccount, UserRole } from '../types';
 import { 
-  Play, 
-  Pause, 
-  Volume2, 
-  VolumeX, 
-  Volume1,
-  Maximize2, 
-  Minimize2,
+  Users, 
+  X, 
   Search, 
-  Star, 
-  Tv, 
-  Radio, 
-  Layers, 
-  Info, 
-  AlertCircle,
-  Smartphone,
-  MonitorPlay,
-  RotateCw,
-  FolderOpen,
-  Download,
+  ShieldAlert, 
+  ShieldCheck, 
+  Lock, 
+  Unlock, 
+  Trash2, 
+  UserPlus, 
+  RefreshCw, 
+  AlertCircle, 
+  CheckCircle, 
+  ToggleLeft, 
+  ToggleRight,
+  Shield,
+  User as UserIcon,
+  Calendar,
+  Eye,
+  EyeOff,
+  Sparkles,
+  Key,
+  Copy,
   Check,
-  X,
-  Users,
+  Mail,
+  Pencil,
+  Tv,
+  Globe,
+  Clock,
   Crown,
   Briefcase,
-  PictureInPicture2,
-  Activity,
-  SkipForward,
-  SkipBack,
-  SignalHigh,
-  ChevronRight
+  CalendarPlus,
+  AlertTriangle,
+  StickyNote,
+  UserCheck,
+  UserX,
+  TrendingUp,
+  MessageCircle,
+  Send
 } from 'lucide-react';
-import { TvRemoteOverlay } from './TvRemoteOverlay';
 
-interface IptvPlayerViewProps {
-  channels: Channel[];
-  categories: string[];
-  selectedCategory: string;
-  onSelectCategory: (category: string) => void;
-  onOpenImporter: () => void;
-  onToggleFavorite: (channelId: string) => void;
-  currentUser?: UserAccount | null;
-  onOpenAdminPanel?: () => void;
+interface AdminUsersModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  currentAdmin: UserAccount;
 }
 
-export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
-  channels,
-  categories,
-  selectedCategory,
-  onSelectCategory,
-  onOpenImporter,
-  onToggleFavorite,
-  currentUser,
-  onOpenAdminPanel,
+export const normalizeUserRole = (r?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' => {
+  if (!r) return 'UsuarioComum';
+  const lower = r.toLowerCase();
+  if (lower === 'adminmaster' || lower === 'master' || lower === 'admin') return 'AdminMaster';
+  if (lower === 'adminrevenda' || lower === 'revenda') return 'AdminRevenda';
+  return 'UsuarioComum';
+};
+
+export const formatDateDisplay = (dateStr?: string | null): string => {
+  if (!dateStr) return 'Vitalício';
+  const parts = dateStr.slice(0, 10).split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return dateStr;
+};
+
+export const getExpirationInfo = (expirationDate?: string | null) => {
+  if (!expirationDate || expirationDate === 'vitalicio') {
+    return { status: 'vitalicio' as const, label: 'Vitalício', isExpired: false, daysLeft: Infinity, isExpiring7: false };
+  }
+  const exp = new Date(`${expirationDate.slice(0, 10)}T23:59:59`);
+  const now = new Date();
+  const diffMs = exp.getTime() - now.getTime();
+  const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  if (daysLeft < 0) {
+    return { status: 'expired' as const, label: `Vencido (${formatDateDisplay(expirationDate)})`, isExpired: true, daysLeft, isExpiring7: false };
+  }
+  if (daysLeft <= 5) {
+    return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft, isExpiring7: true };
+  }
+  if (daysLeft <= 7) {
+    return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft, isExpiring7: true };
+  }
+  return { status: 'active' as const, label: `Válido até ${formatDateDisplay(expirationDate)}`, isExpired: false, daysLeft, isExpiring7: false };
+};
+
+export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
+  isOpen,
+  onClose,
+  currentAdmin,
 }) => {
-  const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [isMuted, setIsMuted] = useState<boolean>(false);
-  const [volume, setVolume] = useState<number>(1);
-  const [showVolumeSlider, setShowVolumeSlider] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<'list' | 'create'>('list');
+  const [filterRole, setFilterRole] = useState<'all' | 'UsuarioComum' | 'AdminRevenda' | 'AdminMaster' | 'expired' | 'expiring7'>('all');
+  const [users, setUsers] = useState<UserAccount[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [isBuffering, setIsBuffering] = useState<boolean>(false);
-  const [aspectRatioMode, setAspectRatioMode] = useState<'fit' | 'fill' | 'zoom'>('fit');
-  const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const [isRemoteOpen, setIsRemoteOpen] = useState<boolean>(false);
-  const [focusedIndex, setFocusedIndex] = useState<number>(0);
-  const [showChannelOsd, setShowChannelOsd] = useState<boolean>(false);
-  const [exportNotification, setExportNotification] = useState<{ type: 'success' | 'info'; message: string } | null>(null);
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [allowRegistration, setAllowRegistration] = useState<boolean>(true);
+  const [settingLoading, setSettingLoading] = useState<boolean>(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
 
-  // ==== Estados novos para player profissional ====
-  const [showControls, setShowControls] = useState<boolean>(true);
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [isPiPActive, setIsPiPActive] = useState<boolean>(false);
-  const [showStats, setShowStats] = useState<boolean>(false);
-  const [stats, setStats] = useState<{ resolution: string; bitrate: number; bufferHealth: number; droppedFrames: number; level: string }>({
-    resolution: '—',
-    bitrate: 0,
-    bufferHealth: 0,
-    droppedFrames: 0,
-    level: '—'
+  const currentAdminRole = normalizeUserRole(currentAdmin.role);
+  const isMaster = currentAdminRole === 'AdminMaster';
+  const isRevenda = currentAdminRole === 'AdminRevenda';
+
+  const [formName, setFormName] = useState<string>('');
+  const [formUsername, setFormUsername] = useState<string>('');
+  const [formEmail, setFormEmail] = useState<string>('');
+  const [formPassword, setFormPassword] = useState<string>('');
+  const [formRole, setFormRole] = useState<'UsuarioComum' | 'AdminRevenda' | 'AdminMaster'>('UsuarioComum');
+  const [formExpirationDate, setFormExpirationDate] = useState<string>(() => {
+    const d = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    return d.toISOString().split('T')[0];
+  });
+  const [formPlaylistUrl, setFormPlaylistUrl] = useState<string>('');
+  const [formPlaylistName, setFormPlaylistName] = useState<string>('');
+  const [formNotes, setFormNotes] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [isSubmittingNewUser, setIsSubmittingNewUser] = useState<boolean>(false);
+  const [lastCreatedUser, setLastCreatedUser] = useState<{ username: string; password: string; name: string; role: string; expirationDate: string | null } | null>(null);
+  const [copiedCredentials, setCopiedCredentials] = useState<boolean>(false);
+
+  const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
+  const [editName, setEditName] = useState<string>('');
+  const [editUsername, setEditUsername] = useState<string>('');
+  const [editEmail, setEditEmail] = useState<string>('');
+  const [editRole, setEditRole] = useState<'UsuarioComum' | 'AdminRevenda' | 'AdminMaster'>('UsuarioComum');
+  const [editExpirationDate, setEditExpirationDate] = useState<string>('');
+  const [editPassword, setEditPassword] = useState<string>('');
+  const [editPlaylistUrl, setEditPlaylistUrl] = useState<string>('');
+  const [editPlaylistName, setEditPlaylistName] = useState<string>('');
+  const [editNotes, setEditNotes] = useState<string>('');
+  const [editShowPassword, setEditShowPassword] = useState<boolean>(false);
+  const [editIsBlocked, setEditIsBlocked] = useState<boolean>(false);
+  const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
+
+  const [renewingUser, setRenewingUser] = useState<UserAccount | null>(null);
+  const [renewCustomDate, setRenewCustomDate] = useState<string>('');
+  const [isRenewing, setIsRenewing] = useState<boolean>(false);
+
+  const getAuthToken = () => {
+    return localStorage.getItem('iptv_auth_token') || sessionStorage.getItem('iptv_auth_token') || '';
+  };
+
+  const fetchUsers = async () => {
+    setLoading(true);
+    try {
+      const token = getAuthToken();
+      const res = await fetch('/api/admin/users', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.users)) {
+        setUsers(data.users);
+        if (data.settings && typeof data.settings.allowPublicRegistration === 'boolean') {
+          setAllowRegistration(data.settings.allowPublicRegistration);
+        }
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao carregar lista de usuários.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Erro de comunicação ao carregar usuários.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchUsers();
+      setFeedbackMsg(null);
+      setPendingDeleteId(null);
+    }
+  }, [isOpen]);
+
+  const handleGeneratePassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let generated = '';
+    for (let i = 0; i < 8; i++) {
+      generated += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setFormPassword(generated);
+    setShowPassword(true);
+  };
+
+  const handleSetFormExpirationDays = (days: number) => {
+    const d = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    setFormExpirationDate(d.toISOString().split('T')[0]);
+  };
+
+  const handleSetEditExpirationDays = (days: number) => {
+    let baseTime = Date.now();
+    if (editExpirationDate) {
+      const existing = new Date(`${editExpirationDate.slice(0, 10)}T23:59:59`).getTime();
+      if (!isNaN(existing) && existing > Date.now()) {
+        baseTime = existing;
+      }
+    }
+    const d = new Date(baseTime + days * 24 * 60 * 60 * 1000);
+    setEditExpirationDate(d.toISOString().split('T')[0]);
+  };
+
+  const handleCreateUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFeedbackMsg(null);
+
+    const cleanUsername = formUsername.trim().toLowerCase().replace(/\s+/g, '');
+    if (cleanUsername.length < 3) {
+      setFeedbackMsg({ type: 'error', text: 'O nome de usuário deve ter pelo menos 3 caracteres.' });
+      return;
+    }
+    if (formPassword.length < 4) {
+      setFeedbackMsg({ type: 'error', text: 'A senha deve ter no mínimo 4 caracteres.' });
+      return;
+    }
+
+    const assignedRole = isRevenda ? 'UsuarioComum' : formRole;
+
+    setIsSubmittingNewUser(true);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: formName.trim() || cleanUsername,
+          username: cleanUsername,
+          email: formEmail.trim() || undefined,
+          password: formPassword,
+          role: assignedRole,
+          expirationDate: formExpirationDate ? formExpirationDate : null,
+          playlistUrl: formPlaylistUrl.trim() || undefined,
+          playlistName: formPlaylistName.trim() || undefined,
+          notes: formNotes.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.success && data.users) {
+        setUsers(data.users);
+        setLastCreatedUser({
+          username: cleanUsername,
+          password: formPassword,
+          name: formName.trim() || cleanUsername,
+          role: assignedRole,
+          expirationDate: formExpirationDate || null,
+        });
+        setFeedbackMsg({
+          type: 'success',
+          text: `Usuário @${cleanUsername} (${assignedRole}) cadastrado com sucesso!`,
+        });
+
+        setFormName('');
+        setFormUsername('');
+        setFormEmail('');
+        setFormPassword('');
+        setFormRole('UsuarioComum');
+        const defaultNextMonth = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        setFormExpirationDate(defaultNextMonth);
+        setFormPlaylistUrl('');
+        setFormPlaylistName('');
+        setFormNotes('');
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao cadastrar novo usuário.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha de comunicação ao cadastrar usuário.' });
+    } finally {
+      setIsSubmittingNewUser(false);
+    }
+  };
+
+  const handleCopyLastCreated = () => {
+    if (!lastCreatedUser) return;
+    const expText = lastCreatedUser.expirationDate 
+      ? formatDateDisplay(lastCreatedUser.expirationDate)
+      : 'Vitalício / Sem Vencimento';
+    const textToCopy = `🔐 *Acesso RPR TV FREE*\n👤 Usuário: ${lastCreatedUser.username}\n🔑 Senha: ${lastCreatedUser.password}\n📅 Vencimento: ${expText}\n\nBaixe o app e faça login com esses dados.`;
+    navigator.clipboard.writeText(textToCopy);
+    setCopiedCredentials(true);
+    setTimeout(() => setCopiedCredentials(false), 2500);
+  };
+
+  const handleCopyUserCredentials = (user: UserAccount) => {
+    const expText = user.expirationDate 
+      ? formatDateDisplay(user.expirationDate)
+      : 'Vitalício';
+    const textToCopy = `🔐 *Acesso RPR TV FREE*\n👤 Usuário: ${user.username}\n🔑 Senha: (a que você definiu no cadastro)\n📅 Vencimento: ${expText}\n\nBaixe o app e faça login com esses dados.`;
+    navigator.clipboard.writeText(textToCopy);
+    setCopiedUserId(user.id);
+    setTimeout(() => setCopiedUserId(null), 2000);
+  };
+
+  const handleToggleBlock = async (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
+
+    if (user.id === currentAdmin.id) {
+      setFeedbackMsg({ type: 'error', text: 'Você não pode bloquear a sua própria conta.' });
+      return;
+    }
+
+    if (targetRole === 'AdminMaster') {
+      setFeedbackMsg({ type: 'error', text: 'Não é permitido bloquear a conta do AdminMaster.' });
+      return;
+    }
+
+    if (isRevenda && targetRole !== 'UsuarioComum') {
+      setFeedbackMsg({ type: 'error', text: 'AdminRevenda só tem permissão para gerenciar Usuários Comuns.' });
+      return;
+    }
+
+    const actionName = user.isBlocked ? 'desbloquear' : 'bloquear';
+    setActionLoadingId(user.id);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}/toggle-block`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` 
+        },
+      });
+      const data = await res.json();
+
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message });
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || `Erro ao ${actionName} usuário.` });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: `Falha ao tentar ${actionName} usuário.` });
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleOpenEdit = (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
+
+    if (isRevenda && targetRole !== 'UsuarioComum' && user.id !== currentAdmin.id) {
+      setFeedbackMsg({ type: 'error', text: 'AdminRevenda não pode alterar contas de outros revendedores ou administradores.' });
+      return;
+    }
+
+    setEditingUser(user);
+    setEditName(user.name || '');
+    setEditUsername(user.username || '');
+    setEditEmail(user.email || '');
+    setEditRole(targetRole);
+    setEditExpirationDate(user.expirationDate ? user.expirationDate.slice(0, 10) : '');
+    setEditIsBlocked(!!user.isBlocked);
+    setEditPassword('');
+    setEditPlaylistUrl(user.playlistUrl || '');
+    setEditPlaylistName(user.playlistName || '');
+    setEditNotes((user as any).notes || '');
+    setEditShowPassword(false);
+    setFeedbackMsg(null);
+  };
+
+  const handleGenerateEditPassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let generated = '';
+    for (let i = 0; i < 8; i++) {
+      generated += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setEditPassword(generated);
+    setEditShowPassword(true);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+
+    const cleanUsername = editUsername.trim().toLowerCase().replace(/\s+/g, '');
+    if (cleanUsername.length < 3) {
+      setFeedbackMsg({ type: 'error', text: 'O nome de usuário deve ter pelo menos 3 caracteres.' });
+      return;
+    }
+
+    if (editPassword && editPassword.trim().length > 0 && editPassword.trim().length < 4) {
+      setFeedbackMsg({ type: 'error', text: 'A nova senha deve ter no mínimo 4 caracteres.' });
+      return;
+    }
+
+    setIsSavingEdit(true);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(editingUser.id)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: editName.trim(),
+          username: cleanUsername,
+          email: editEmail.trim() || undefined,
+          role: isMaster ? editRole : undefined,
+          expirationDate: editExpirationDate ? editExpirationDate : 'vitalicio',
+          password: editPassword.trim() || undefined,
+          isBlocked: editIsBlocked,
+          playlistUrl: editPlaylistUrl.trim() || undefined,
+          playlistName: editPlaylistName.trim() || undefined,
+          notes: editNotes.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message || 'Dados atualizados com sucesso!' });
+        setEditingUser(null);
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao atualizar dados do usuário.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha de comunicação ao tentar salvar alterações.' });
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleRequestDelete = (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
+
+    if (user.id === currentAdmin.id) {
+      setFeedbackMsg({ type: 'error', text: 'Você não pode excluir sua própria conta.' });
+      return;
+    }
+
+    if (targetRole === 'AdminMaster') {
+      setFeedbackMsg({ type: 'error', text: 'Não é permitido excluir o AdminMaster principal.' });
+      return;
+    }
+
+    if (isRevenda && targetRole !== 'UsuarioComum') {
+      setFeedbackMsg({ 
+        type: 'error', 
+        text: 'AdminRevenda não tem permissão para remover revendedores ou administradores.' 
+      });
+      return;
+    }
+
+    setPendingDeleteId(user.id);
+    setFeedbackMsg(null);
+  };
+
+  const handleConfirmDelete = async (user: UserAccount) => {
+    setActionLoadingId(user.id);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message || `Usuário @${user.username} excluído com sucesso.` });
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao excluir usuário.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha ao tentar excluir usuário.' });
+    } finally {
+      setActionLoadingId(null);
+      setPendingDeleteId(null);
+    }
+  };
+
+  const handleQuickRenew = async (targetUser: UserAccount, days: number, customDate?: string) => {
+    setActionLoadingId(targetUser.id);
+    setIsRenewing(true);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const payload = customDate !== undefined 
+        ? { newExpirationDate: customDate }
+        : { days };
+
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(targetUser.id)}/renew`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` 
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message });
+        setRenewingUser(null);
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao renovar vencimento do cliente.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha ao comunicar com o servidor para renovação.' });
+    } finally {
+      setActionLoadingId(null);
+      setIsRenewing(false);
+    }
+  };
+
+  const handleToggleRegistration = async () => {
+    const nextState = !allowRegistration;
+    setSettingLoading(true);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch('/api/admin/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ allowPublicRegistration: nextState }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAllowRegistration(nextState);
+        setFeedbackMsg({ type: 'success', text: data.message });
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao atualizar configurações.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha de comunicação ao atualizar configuração.' });
+    } finally {
+      setSettingLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  const filteredUsers = users.filter((u) => {
+    const role = normalizeUserRole(u.role);
+    const expInfo = getExpirationInfo(u.expirationDate);
+
+    if (filterRole === 'UsuarioComum' && role !== 'UsuarioComum') return false;
+    if (filterRole === 'AdminRevenda' && role !== 'AdminRevenda') return false;
+    if (filterRole === 'AdminMaster' && role !== 'AdminMaster') return false;
+    if (filterRole === 'expired' && !expInfo.isExpired) return false;
+    if (filterRole === 'expiring7' && !expInfo.isExpiring7) return false;
+
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return true;
+    return (
+      u.name.toLowerCase().includes(q) ||
+      u.username.toLowerCase().includes(q) ||
+      (u.email ? u.email.toLowerCase().includes(q) : false) ||
+      (u.createdBy ? u.createdBy.toLowerCase().includes(q) : false)
+    );
   });
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
-  const playerContainerRef = useRef<HTMLDivElement>(null);
-  const osdTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const hideControlsTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const statsIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const lastTapRef = useRef<number>(0);
-  const volumeSliderTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // ==== Auto-hide dos controles ====
-  const revealControls = useCallback(() => {
-    setShowControls(true);
-    if (hideControlsTimerRef.current) {
-      clearTimeout(hideControlsTimerRef.current);
-    }
-    hideControlsTimerRef.current = setTimeout(() => {
-      // Esconde só se estiver tocando e não estiver com volume ou stats abertos
-      setShowControls(prev => {
-        return true; // placeholder — decisão real abaixo
-      });
-      if (videoRef.current && !videoRef.current.paused) {
-        setShowControls(false);
-        setShowVolumeSlider(false);
-      }
-    }, 3000);
-  }, []);
-
-  // Auto-select first channel on mount or channel list update
-  useEffect(() => {
-    if (!activeChannel && channels.length > 0) {
-      setActiveChannel(channels[0]);
-    }
-  }, [channels, activeChannel]);
-
-  // Trigger smooth Smart TV OSD banner on channel switch
-  useEffect(() => {
-    if (!activeChannel) return;
-    setShowChannelOsd(true);
-    if (osdTimerRef.current) {
-      clearTimeout(osdTimerRef.current);
-    }
-    osdTimerRef.current = setTimeout(() => {
-      setShowChannelOsd(false);
-    }, 2800);
-
-    return () => {
-      if (osdTimerRef.current) {
-        clearTimeout(osdTimerRef.current);
-      }
-    };
-  }, [activeChannel?.id]);
-
-  // Load stream whenever activeChannel changes
-  useEffect(() => {
-    if (!activeChannel || !videoRef.current) return;
-
-    setPlaybackError(null);
-    setIsBuffering(true);
-    revealControls();
-
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
-
-    const video = videoRef.current;
-    let streamUrl = activeChannel.streamUrl;
-    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && streamUrl.startsWith('http://')) {
-      streamUrl = `/api/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
-    }
-
-    if (Hls.isSupported() && (streamUrl.includes('.m3u8') || streamUrl.includes('hls') || streamUrl.startsWith('http') || streamUrl.includes('/api/proxy-stream'))) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 30,
-      });
-
-      hls.loadSource(streamUrl);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setIsBuffering(false);
-        video.play().then(() => {
-          setIsPlaying(true);
-          revealControls();
-        }).catch(() => setIsPlaying(false));
-      });
-
-      hls.on(Hls.Events.BUFFER_APPENDING, () => {
-        setIsBuffering(true);
-      });
-
-      hls.on(Hls.Events.BUFFER_APPENDED, () => {
-        setIsBuffering(false);
-      });
-
-      hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
-        if (hls.levels[data.level]) {
-          const lvl = hls.levels[data.level];
-          setStats(prev => ({
-            ...prev,
-            resolution: `${lvl.width}x${lvl.height}`,
-            bitrate: Math.round((lvl.bitrate || 0) / 1000),
-            level: `Nível ${data.level}`
-          }));
-        }
-      });
-
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) {
-          setIsBuffering(false);
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              setPlaybackError('Erro de rede ao conectar no stream HLS.');
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              setPlaybackError('Erro nos codecs de áudio/vídeo do stream.');
-              hls.recoverMediaError();
-              break;
-            default:
-              setPlaybackError('Fluxo indisponível no momento ou bloqueado por CORS no navegador.');
-              hls.destroy();
-              break;
-          }
-        }
-      });
-
-      hlsRef.current = hls;
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = streamUrl;
-      video.addEventListener('loadedmetadata', () => {
-        setIsBuffering(false);
-        video.play().then(() => {
-          setIsPlaying(true);
-          revealControls();
-        }).catch(() => setIsPlaying(false));
-      });
-      video.addEventListener('error', () => {
-        setIsBuffering(false);
-        setPlaybackError('Não foi possível carregar o vídeo nativo.');
-      });
-    } else {
-      video.src = streamUrl;
-      video.play().then(() => {
-        setIsPlaying(true);
-        revealControls();
-      }).catch(() => setIsPlaying(false));
-    }
-
-    return () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
-    };
-  }, [activeChannel, revealControls]);
-
-  // Atualiza volume quando slider muda
-  useEffect(() => {
-    if (!videoRef.current) return;
-    videoRef.current.volume = volume;
-    videoRef.current.muted = volume === 0 || isMuted;
-  }, [volume, isMuted]);
-
-  // Detecta entrada/saída de fullscreen
-  useEffect(() => {
-    const handler = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-      revealControls();
-    };
-    document.addEventListener('fullscreenchange', handler);
-    return () => document.removeEventListener('fullscreenchange', handler);
-  }, [revealControls]);
-
-  // Detecta PiP
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const onEnter = () => setIsPiPActive(true);
-    const onLeave = () => setIsPiPActive(false);
-    video.addEventListener('enterpictureinpicture', onEnter);
-    video.addEventListener('leavepictureinpicture', onLeave);
-    return () => {
-      video.removeEventListener('enterpictureinpicture', onEnter);
-      video.removeEventListener('leavepictureinpicture', onLeave);
-    };
-  }, []);
-
-  // Coleta estatísticas quando painel aberto
-  useEffect(() => {
-    if (!showStats) {
-      if (statsIntervalRef.current) {
-        clearInterval(statsIntervalRef.current);
-        statsIntervalRef.current = null;
-      }
-      return;
-    }
-    const collect = () => {
-      const video = videoRef.current;
-      if (!video) return;
-      let bufferHealth = 0;
-      try {
-        if (video.buffered.length > 0) {
-          bufferHealth = video.buffered.end(video.buffered.length - 1) - video.currentTime;
-        }
-      } catch {}
-      const quality = (video as any).getVideoPlaybackQuality?.();
-      setStats(prev => ({
-        ...prev,
-        bufferHealth: Math.max(0, bufferHealth),
-        droppedFrames: quality?.droppedVideoFrames ?? 0,
-        resolution: video.videoWidth && video.videoHeight ? `${video.videoWidth}x${video.videoHeight}` : prev.resolution,
-      }));
-    };
-    collect();
-    statsIntervalRef.current = setInterval(collect, 1000);
-    return () => {
-      if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
-    };
-  }, [showStats]);
-
-  // Atalhos de teclado
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
-      switch (e.key.toLowerCase()) {
-        case ' ':
-        case 'k':
-          e.preventDefault();
-          togglePlay();
-          revealControls();
-          break;
-        case 'f':
-          e.preventDefault();
-          toggleFullscreen();
-          break;
-        case 'm':
-          e.preventDefault();
-          toggleMute();
-          revealControls();
-          break;
-        case 'arrowright':
-          e.preventDefault();
-          handleNextChannel();
-          revealControls();
-          break;
-        case 'arrowleft':
-          e.preventDefault();
-          handlePrevChannel();
-          revealControls();
-          break;
-        case 'arrowup':
-          e.preventDefault();
-          setVolume(v => Math.min(1, +(v + 0.1).toFixed(2)));
-          setShowVolumeSlider(true);
-          revealControls();
-          break;
-        case 'arrowdown':
-          e.preventDefault();
-          setVolume(v => Math.max(0, +(v - 0.1).toFixed(2)));
-          setShowVolumeSlider(true);
-          revealControls();
-          break;
-        case 'p':
-          e.preventDefault();
-          togglePiP();
-          break;
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [revealControls]);
-
-  // Cleanup de timers
-  useEffect(() => {
-    return () => {
-      if (hideControlsTimerRef.current) clearTimeout(hideControlsTimerRef.current);
-      if (volumeSliderTimeoutRef.current) clearTimeout(volumeSliderTimeoutRef.current);
-      if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
-    };
-  }, []);
-
-  const normalizeText = (text: string) =>
-    text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-
-  const filteredChannels = channels.filter((c) => {
-    const matchesCategory =
-      selectedCategory === 'TODOS' ||
-      (selectedCategory === 'FAVORITOS' && c.isFavorite) ||
-      c.groupTitle?.toLowerCase() === selectedCategory.toLowerCase();
-
-    const cleanQuery = normalizeText(searchQuery.trim());
-    const matchesSearch =
-      cleanQuery === '' ||
-      normalizeText(c.name).includes(cleanQuery) ||
-      (c.groupTitle ? normalizeText(c.groupTitle).includes(cleanQuery) : false);
-
-    return matchesCategory && matchesSearch;
-  });
-
-  const togglePlay = () => {
-    if (!videoRef.current) return;
-    if (isPlaying) {
-      videoRef.current.pause();
-      setIsPlaying(false);
-      setShowControls(true);
-    } else {
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
-      revealControls();
-    }
-  };
-
-  const toggleMute = () => {
-    if (!videoRef.current) return;
-    const newMuted = !isMuted;
-    videoRef.current.muted = newMuted;
-    setIsMuted(newMuted);
-    setShowVolumeSlider(true);
-    if (volumeSliderTimeoutRef.current) clearTimeout(volumeSliderTimeoutRef.current);
-    volumeSliderTimeoutRef.current = setTimeout(() => setShowVolumeSlider(false), 2500);
-  };
-
-  const handleVolumeChange = (v: number) => {
-    setVolume(v);
-    if (v > 0) setIsMuted(false);
-    if (videoRef.current) {
-      videoRef.current.volume = v;
-      videoRef.current.muted = v === 0;
-    }
-    setShowVolumeSlider(true);
-    if (volumeSliderTimeoutRef.current) clearTimeout(volumeSliderTimeoutRef.current);
-    volumeSliderTimeoutRef.current = setTimeout(() => setShowVolumeSlider(false), 2500);
-  };
-
-  const cycleAspectRatio = () => {
-    if (aspectRatioMode === 'fit') setAspectRatioMode('fill');
-    else if (aspectRatioMode === 'fill') setAspectRatioMode('zoom');
-    else setAspectRatioMode('fit');
-    revealControls();
-  };
-
-  const toggleFullscreen = async () => {
-    if (!playerContainerRef.current) return;
-    try {
-      if (!document.fullscreenElement) {
-        await playerContainerRef.current.requestFullscreen();
-        // Tenta travar em paisagem no celular (funciona em alguns Androids)
-        try {
-          await (screen.orientation as any)?.lock?.('landscape');
-        } catch {}
-      } else {
-        try {
-          await (screen.orientation as any)?.unlock?.();
-        } catch {}
-        await document.exitFullscreen();
-      }
-    } catch {}
-  };
-
-  const togglePiP = async () => {
-    const video = videoRef.current;
-    if (!video) return;
-    try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else {
-        await (video as any).requestPictureInPicture?.();
-      }
-    } catch {}
-  };
-
-  // Duplo toque / clique no vídeo
-  const handleVideoClick = () => {
-    const now = Date.now();
-    if (now - lastTapRef.current < 300) {
-      // Duplo toque → fullscreen
-      toggleFullscreen();
-      lastTapRef.current = 0;
-      return;
-    }
-    lastTapRef.current = now;
-    setTimeout(() => {
-      if (lastTapRef.current !== 0) {
-        // Clique simples → play/pause (só se não virou duplo toque)
-        togglePlay();
-        lastTapRef.current = 0;
-      }
-    }, 300);
-  };
-
-  const handleMouseMove = () => {
-    revealControls();
-  };
-
-  const handleRemoteNavigate = (dir: 'up' | 'down' | 'left' | 'right') => {
-    if (filteredChannels.length === 0) return;
-    let nextIdx = focusedIndex;
-    if (dir === 'right') nextIdx = Math.min(nextIdx + 1, filteredChannels.length - 1);
-    else if (dir === 'left') nextIdx = Math.max(nextIdx - 1, 0);
-    else if (dir === 'down') nextIdx = Math.min(nextIdx + 4, filteredChannels.length - 1);
-    else if (dir === 'up') nextIdx = Math.max(nextIdx - 4, 0);
-
-    setFocusedIndex(nextIdx);
-  };
-
-  const handleRemoteSelect = () => {
-    if (filteredChannels[focusedIndex]) {
-      setActiveChannel(filteredChannels[focusedIndex]);
-    }
-  };
-
-  const handleNextChannel = () => {
-    if (!activeChannel || filteredChannels.length === 0) return;
-    const curIdx = filteredChannels.findIndex((c) => c.id === activeChannel.id);
-    const nextIdx = (curIdx + 1) % filteredChannels.length;
-    setActiveChannel(filteredChannels[nextIdx]);
-    setFocusedIndex(nextIdx);
-    revealControls();
-  };
-
-  const handlePrevChannel = () => {
-    if (!activeChannel || filteredChannels.length === 0) return;
-    const curIdx = filteredChannels.findIndex((c) => c.id === activeChannel.id);
-    const prevIdx = (curIdx - 1 + filteredChannels.length) % filteredChannels.length;
-    setActiveChannel(filteredChannels[prevIdx]);
-    setFocusedIndex(prevIdx);
-    revealControls();
-  };
-
-  const favoriteChannels = channels.filter((c) => c.isFavorite);
-
-  const handleExportFavorites = () => {
-    if (favoriteChannels.length === 0) {
-      setExportNotification({
-        type: 'info',
-        message: 'Você ainda não possui canais favoritados. Clique na estrela (⭐) de qualquer canal para favoritá-lo e exportar!',
-      });
-      setTimeout(() => setExportNotification(null), 4500);
-      return;
-    }
-
-    const payload = {
-      appName: 'RPR TV FREE',
-      version: '1.0',
-      exportType: 'iptv_favorites_backup',
-      exportedAt: new Date().toISOString(),
-      user: currentUser
-        ? { id: currentUser.id, username: currentUser.username, name: currentUser.name }
-        : { username: 'usuario_local' },
-      totalFavorites: favoriteChannels.length,
-      channels: favoriteChannels.map((c) => ({
-        id: c.id,
-        name: c.name,
-        streamUrl: c.streamUrl,
-        logoUrl: c.logoUrl || '',
-        groupTitle: c.groupTitle || 'Favoritos',
-        tvgId: c.tvgId || '',
-        tvgName: c.tvgName || '',
-        userAgent: c.userAgent || '',
-        isFavorite: true,
-      })),
-    };
-
-    const jsonString = JSON.stringify(payload, null, 2);
-    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    const safeUser = currentUser?.username ? currentUser.username.replace(/[^a-zA-Z0-9_-]/g, '') : 'usuario';
-    const dateStr = new Date().toISOString().slice(0, 10);
-    link.href = url;
-    link.download = `favoritos_iptv_${safeUser}_${dateStr}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-
-    setExportNotification({
-      type: 'success',
-      message: `${favoriteChannels.length} canal(is) favorito(s) exportado(s) com sucesso em formato JSON!`,
-    });
-    setTimeout(() => setExportNotification(null), 5000);
-  };
-
-  const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+  const totalUsers = users.length;
+  const clientUsers = users.filter(u => normalizeUserRole(u.role) === 'UsuarioComum').length;
+  const revendaUsers = users.filter(u => normalizeUserRole(u.role) === 'AdminRevenda').length;
+  const masterUsers = users.filter(u => normalizeUserRole(u.role) === 'AdminMaster').length;
+  const expiredUsers = users.filter(u => getExpirationInfo(u.expirationDate).isExpired).length;
+  const blockedUsersCount = users.filter((u) => u.isBlocked).length;
+  const expiring7Users = users.filter(u => getExpirationInfo(u.expirationDate).isExpiring7).length;
+  const activeClients = users.filter(u => {
+    const role = normalizeUserRole(u.role);
+    if (role !== 'UsuarioComum') return false;
+    if (u.isBlocked) return false;
+    if (getExpirationInfo(u.expirationDate).isExpired) return false;
+    return true;
+  }).length;
 
   return (
-    <div id="iptv-player-view" className="flex flex-col h-full bg-[#090E1A] text-slate-100 select-none">
-      {/* Top Bar / App Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-3.5 bg-[#0F172A] border-b border-slate-800">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <Tv className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-sm font-bold tracking-tight text-white">RPR TV FREE</h1>
-              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                Media3 ExoPlayer Ready
-              </span>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+      <div 
+        id="admin-users-modal"
+        className="w-full max-w-4xl bg-[#0C1222] border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
+      >
+        <div className="px-5 py-3.5 bg-[#111A2E] border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md ${
+              isMaster 
+                ? 'bg-amber-500/20 border border-amber-500/40 text-amber-400 shadow-amber-500/10'
+                : 'bg-blue-600/20 border border-blue-500/40 text-blue-400 shadow-blue-500/10'
+            }`}>
+              {isMaster ? <Crown className="w-5 h-5" /> : <Briefcase className="w-5 h-5" />}
             </div>
-            <p className="text-xs text-slate-400">
-              {channels.length} canais carregados • Suporte a HLS / DASH / M3U8
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2.5">
-          <div className="relative w-48 sm:w-64">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              id="iptv-search-input"
-              type="text"
-              placeholder="Buscar canal por nome..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-[#1A2338] border border-slate-700/80 rounded-xl pl-9 pr-8 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 transition"
-            />
-            {searchQuery && (
-              <button
-                id="clear-search-header-btn"
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-0.5 rounded transition"
-                title="Limpar pesquisa"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          {onOpenAdminPanel && (currentUser?.role === 'AdminMaster' || currentUser?.role === 'AdminRevenda' || currentUser?.role === 'admin') && (
-            <button
-              id="player-open-admin-panel-btn"
-              onClick={onOpenAdminPanel}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl border shadow-sm transition active:scale-95 cursor-pointer ${
-                currentUser.role === 'AdminRevenda'
-                  ? 'bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/40'
-                  : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
-              }`}
-              title="Acessar painel de gerenciamento de clientes e revendas"
-            >
-              {currentUser.role === 'AdminRevenda' ? (
-                <Briefcase className="w-3.5 h-3.5 text-blue-400" />
-              ) : (
-                <Crown className="w-3.5 h-3.5 text-amber-400" />
-              )}
-              <span className="hidden sm:inline">
-                {currentUser.role === 'AdminRevenda' ? 'Painel Revenda' : 'Painel Master'}
-              </span>
-              <span className="sm:hidden">Painel</span>
-            </button>
-          )}
-
-          <button
-            id="export-favorites-btn"
-            onClick={handleExportFavorites}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 shadow-sm transition active:scale-95 cursor-pointer"
-            title="Exportar canais favoritos em formato JSON para backup ou sincronização futura"
-          >
-            <Download className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline font-semibold">Exportar Favoritos</span>
-            <span className="sm:hidden font-semibold">Favoritos</span>
-            <span className="px-1.5 py-0.2 rounded-full bg-amber-500/25 text-[10px] font-mono font-bold text-amber-300 border border-amber-500/30">
-              {favoriteChannels.length}
-            </span>
-          </button>
-
-          <button
-            id="open-importer-btn"
-            onClick={onOpenImporter}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-600/20 transition active:scale-95"
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Importar Lista</span>
-          </button>
-
-          <button
-            id="toggle-remote-btn"
-            onClick={() => setIsRemoteOpen(!isRemoteOpen)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border transition ${
-              isRemoteOpen
-                ? 'bg-blue-600/20 text-blue-300 border-blue-500/50'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-            }`}
-          >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Controle TV</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Categories Horizontal Bar */}
-      <div className="flex items-center gap-2 px-6 py-2.5 bg-[#0C1322] border-b border-slate-800/80 overflow-x-auto custom-scrollbar">
-        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1 shrink-0 mr-2">
-          <Layers className="w-3.5 h-3.5 text-blue-400" />
-          Grupos:
-        </span>
-        {categories.map((category) => {
-          const isSelected = selectedCategory === category;
-          return (
-            <button
-              key={category}
-              id={`cat-btn-${category.replace(/[^a-zA-Z0-9]/g, '-')}`}
-              onClick={() => onSelectCategory(category)}
-              className={`relative px-3.5 py-1.5 rounded-full text-xs font-medium shrink-0 transition-colors cursor-pointer z-0 ${
-                isSelected
-                  ? 'text-white font-semibold'
-                  : 'bg-slate-800/80 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-              }`}
-            >
-              {isSelected && (
-                <motion.div
-                  layoutId="activeCategoryPill"
-                  className="absolute inset-0 bg-blue-600 rounded-full shadow-md shadow-blue-600/30 -z-10"
-                  transition={{ type: 'spring', stiffness: 450, damping: 35 }}
-                />
-              )}
-              {category}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        {/* Left Side: Video Player Stage */}
-        <div className="w-full lg:w-7/12 xl:w-8/12 flex flex-col bg-black relative border-b lg:border-b-0 lg:border-r border-slate-800">
-          <div
-            ref={playerContainerRef}
-            className="relative flex-1 bg-black flex items-center justify-center overflow-hidden min-h-[260px] sm:min-h-[380px] group/player"
-            onMouseMove={handleMouseMove}
-            onMouseLeave={() => {
-              if (isPlaying && !showVolumeSlider && !showStats) {
-                setShowControls(false);
-              }
-            }}
-            onTouchStart={revealControls}
-            onClick={handleVideoClick}
-          >
-            <video
-              ref={videoRef}
-              playsInline
-              className={`w-full h-full ${
-                aspectRatioMode === 'fit'
-                  ? 'object-contain'
-                  : aspectRatioMode === 'fill'
-                  ? 'object-fill'
-                  : 'object-cover'
-              }`}
-            />
-
-            {/* Buffering Spinner */}
-            <AnimatePresence>
-              {isBuffering && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute inset-0 bg-black/40 backdrop-blur-xs flex flex-col items-center justify-center pointer-events-none z-20"
-                >
-                  <div className="relative">
-                    <div className="w-14 h-14 border-4 border-white/10 rounded-full" />
-                    <div className="absolute inset-0 w-14 h-14 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                  </div>
-                  <span className="text-xs text-slate-200 font-medium mt-3 tracking-wide">
-                    Carregando stream...
-                  </span>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Botão central de play quando pausado (só aparece quando não está tocando) */}
-            <AnimatePresence>
-              {!isPlaying && !isBuffering && !playbackError && (
-                <motion.button
-                  initial={{ opacity: 0, scale: 0.85 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.85 }}
-                  transition={{ duration: 0.2 }}
-                  onClick={(e) => { e.stopPropagation(); togglePlay(); }}
-                  className="absolute inset-0 z-30 flex items-center justify-center group/btn cursor-pointer"
-                  aria-label="Reproduzir"
-                >
-                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-black/55 backdrop-blur-md border border-white/20 flex items-center justify-center shadow-2xl transition-transform group-hover/btn:scale-110 group-active/btn:scale-95">
-                    <Play className="w-9 h-9 sm:w-10 sm:h-10 text-white fill-white translate-x-1" />
-                  </div>
-                </motion.button>
-              )}
-            </AnimatePresence>
-
-            {/* Error Alert */}
-            <AnimatePresence>
-              {playbackError && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute top-4 left-4 right-4 z-40 bg-rose-950/95 border border-rose-600/50 p-3 rounded-xl flex items-start gap-2.5 text-rose-200 text-xs shadow-lg"
-                >
-                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <p className="font-semibold">Aviso de Reprodução Web:</p>
-                    <p className="text-rose-300 mt-0.5">{playbackError}</p>
-                    <p className="text-[10px] text-rose-400 mt-1">
-                      *Nota: No aplicativo nativo Android com <strong>ExoPlayer</strong> e <code className="bg-rose-900/60 px-1 rounded">usesCleartextTraffic="true"</code>, este fluxo rodará sem restrições de CORS.
-                    </p>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* ==== CONTROLES AUTO-HIDE ==== */}
-            <AnimatePresence>
-              {showControls && (
-                <>
-                  {/* Top gradient + título do canal */}
-                  <motion.div
-                    initial={{ opacity: 0, y: -15 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -15 }}
-                    transition={{ duration: 0.2 }}
-                    className="absolute top-0 inset-x-0 z-20 bg-gradient-to-b from-black/80 via-black/40 to-transparent p-3 sm:p-4 flex items-center justify-between gap-3 pointer-events-none"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      {activeChannel?.logoUrl ? (
-                        <img
-                          src={activeChannel.logoUrl}
-                          alt={activeChannel.name}
-                          className="w-8 h-8 object-contain rounded bg-white/10 p-0.5 shrink-0"
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                        />
-                      ) : (
-                        <div className="w-8 h-8 rounded bg-white/10 flex items-center justify-center shrink-0">
-                          <Tv className="w-4 h-4 text-white/80" />
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h2 className="text-sm font-semibold text-white truncate">{activeChannel?.name || 'Sem canal'}</h2>
-                          <span className="flex items-center gap-1 shrink-0">
-                            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                            <span className="text-[10px] font-bold text-red-400 uppercase tracking-wider">Ao Vivo</span>
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-white/60 truncate">{activeChannel?.groupTitle || 'Geral'}</p>
-                      </div>
-                    </div>
-                  </motion.div>
-
-                  {/* Bottom bar de controles */}
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 20 }}
-                    transition={{ duration: 0.2 }}
-                    className="absolute bottom-0 inset-x-0 z-30 bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-8 pb-3 px-3 sm:px-4"
-                  >
-                    {/* Barra "ao vivo" fake (progresso não se aplica a live) */}
-                    <div className="mb-2 flex items-center gap-2">
-                      <div className="flex-1 h-1 bg-white/15 rounded-full overflow-hidden relative">
-                        <div className="absolute inset-0 bg-gradient-to-r from-blue-500 to-red-500 rounded-full" />
-                      </div>
-                      <span className="flex items-center gap-1 text-[10px] font-bold text-red-400 shrink-0">
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                        AO VIVO
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2">
-                      {/* Esquerda: play + prev + next + volume */}
-                      <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
-                        <button
-                          onClick={togglePlay}
-                          className="w-10 h-10 rounded-full bg-white text-slate-900 hover:bg-white/90 flex items-center justify-center transition shadow-lg active:scale-95 shrink-0"
-                          title={isPlaying ? 'Pausar (espaço)' : 'Reproduzir (espaço)'}
-                        >
-                          {isPlaying ? <Pause className="w-4 h-4 fill-slate-900" /> : <Play className="w-4 h-4 fill-slate-900 translate-x-0.5" />}
-                        </button>
-
-                        <button
-                          onClick={handlePrevChannel}
-                          className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 text-white flex items-center justify-center transition active:scale-95"
-                          title="Canal anterior (←)"
-                        >
-                          <SkipBack className="w-4 h-4" />
-                        </button>
-
-                        <button
-                          onClick={handleNextChannel}
-                          className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 text-white flex items-center justify-center transition active:scale-95"
-                          title="Próximo canal (→)"
-                        >
-                          <SkipForward className="w-4 h-4" />
-                        </button>
-
-                        {/* Volume */}
-                        <div
-                          className="relative flex items-center"
-                          onMouseEnter={() => setShowVolumeSlider(true)}
-                          onMouseLeave={() => {
-                            if (volumeSliderTimeoutRef.current) clearTimeout(volumeSliderTimeoutRef.current);
-                            volumeSliderTimeoutRef.current = setTimeout(() => setShowVolumeSlider(false), 400);
-                          }}
-                        >
-                          <button
-                            onClick={toggleMute}
-                            className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 text-white flex items-center justify-center transition active:scale-95"
-                            title={isMuted ? 'Ativar som (M)' : 'Mutar (M)'}
-                          >
-                            <VolumeIcon className="w-4 h-4" />
-                          </button>
-
-                          <AnimatePresence>
-                            {showVolumeSlider && (
-                              <motion.div
-                                initial={{ opacity: 0, width: 0, marginLeft: 0 }}
-                                animate={{ opacity: 1, width: 96, marginLeft: 8 }}
-                                exit={{ opacity: 0, width: 0, marginLeft: 0 }}
-                                transition={{ duration: 0.18 }}
-                                className="overflow-hidden"
-                              >
-                                <input
-                                  type="range"
-                                  min={0}
-                                  max={1}
-                                  step={0.01}
-                                  value={isMuted ? 0 : volume}
-                                  onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-                                  className="w-24 h-1 accent-blue-500 cursor-pointer"
-                                  aria-label="Volume"
-                                />
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-                      </div>
-
-                      {/* Direita: aspect, stats, pip, fullscreen */}
-                      <div className="flex items-center gap-1.5 sm:gap-2">
-                        <button
-                          onClick={cycleAspectRatio}
-                          className="hidden sm:flex px-2.5 h-9 text-[11px] font-mono rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 text-blue-200 items-center justify-center uppercase transition active:scale-95"
-                          title="Alternar proporção (Fit / Fill / Zoom)"
-                        >
-                          {aspectRatioMode}
-                        </button>
-
-                        <button
-                          onClick={() => { setShowStats(s => !s); revealControls(); }}
-                          className={`w-9 h-9 rounded-full backdrop-blur-md border flex items-center justify-center transition active:scale-95 ${
-                            showStats
-                              ? 'bg-blue-600/30 border-blue-400/50 text-blue-200'
-                              : 'bg-white/10 hover:bg-white/20 border-white/10 text-white'
-                          }`}
-                          title="Estatísticas de reprodução"
-                        >
-                          <Activity className="w-4 h-4" />
-                        </button>
-
-                        <button
-                          onClick={togglePiP}
-                          className={`w-9 h-9 rounded-full backdrop-blur-md border flex items-center justify-center transition active:scale-95 ${
-                            isPiPActive
-                              ? 'bg-blue-600/30 border-blue-400/50 text-blue-200'
-                              : 'bg-white/10 hover:bg-white/20 border-white/10 text-white'
-                          }`}
-                          title="Picture-in-Picture (P)"
-                        >
-                          <PictureInPicture2 className="w-4 h-4" />
-                        </button>
-
-                        <button
-                          onClick={toggleFullscreen}
-                          className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 text-white flex items-center justify-center transition active:scale-95"
-                          title="Tela cheia (F)"
-                        >
-                          {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-                        </button>
-                      </div>
-                    </div>
-                  </motion.div>
-                </>
-              )}
-            </AnimatePresence>
-
-            {/* Painel de estatísticas (overlay) */}
-            <AnimatePresence>
-              {showStats && (
-                <motion.div
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 20 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute top-16 right-3 z-30 bg-black/85 backdrop-blur-md border border-white/15 rounded-xl p-3 w-56 text-[11px] text-white shadow-2xl font-mono"
-                >
-                  <div className="flex items-center justify-between mb-2 pb-2 border-b border-white/10">
-                    <span className="font-bold text-xs flex items-center gap-1.5">
-                      <SignalHigh className="w-3.5 h-3.5 text-emerald-400" />
-                      Estatísticas
-                    </span>
-                    <button
-                      onClick={() => setShowStats(false)}
-                      className="text-white/60 hover:text-white"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between">
-                      <span className="text-white/60">Resolução</span>
-                      <span className="text-white">{stats.resolution}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-white/60">Bitrate</span>
-                      <span className="text-white">{stats.bitrate ? `${stats.bitrate} kbps` : '—'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-white/60">Buffer</span>
-                      <span className={stats.bufferHealth > 5 ? 'text-emerald-400' : stats.bufferHealth > 2 ? 'text-amber-400' : 'text-rose-400'}>
-                        {stats.bufferHealth.toFixed(1)}s
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-white/60">Frames perdidos</span>
-                      <span className={stats.droppedFrames > 0 ? 'text-amber-400' : 'text-white'}>
-                        {stats.droppedFrames}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-white/60">Modo</span>
-                      <span className="text-white uppercase">{aspectRatioMode}</span>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Channel Logo / Watermark Overlay (só quando controles ocultos) */}
-            <AnimatePresence>
-              {!showControls && activeChannel && (
-                <motion.div
-                  key={`wm-${activeChannel.id}`}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.3 }}
-                  className="absolute top-4 left-4 z-10 flex items-center gap-2 bg-black/50 backdrop-blur-md px-2.5 py-1.5 rounded-lg border border-white/10 pointer-events-none"
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                  <span className="text-[11px] font-semibold text-white/90 truncate max-w-[180px]">
-                    {activeChannel.name}
-                  </span>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Channel Switch OSD Banner */}
-            <AnimatePresence>
-              {showChannelOsd && activeChannel && (
-                <motion.div
-                  key={`osd-${activeChannel.id}`}
-                  initial={{ opacity: 0, y: 20, scale: 0.96 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 15, scale: 0.96 }}
-                  transition={{ duration: 0.26, ease: 'easeOut' }}
-                  className="absolute bottom-24 left-4 right-4 sm:left-6 sm:right-auto sm:max-w-sm z-40 bg-slate-950/90 backdrop-blur-md border border-blue-500/40 rounded-2xl p-3.5 shadow-2xl pointer-events-none"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-xl bg-slate-900 border border-slate-700/80 flex items-center justify-center p-1 shrink-0 overflow-hidden shadow-inner">
-                      {activeChannel.logoUrl ? (
-                        <img
-                          src={activeChannel.logoUrl}
-                          alt={activeChannel.name}
-                          className="w-full h-full object-contain"
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                        />
-                      ) : (
-                        <Tv className="w-5 h-5 text-blue-400" />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30">
-                          Sintonizado
-                        </span>
-                        <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                          Ao Vivo
-                        </span>
-                      </div>
-                      <h3 className="text-sm font-bold text-white truncate mt-0.5 leading-tight">
-                        {activeChannel.name}
-                      </h3>
-                      <p className="text-[11px] text-slate-400 truncate">
-                        {activeChannel.groupTitle || 'Geral'} • {activeChannel.streamUrl.endsWith('.m3u8') ? 'HLS / M3U8' : 'Stream Direto'}
-                      </p>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          {/* Player Metadata Footer */}
-          <AnimatePresence mode="wait">
-            {activeChannel && (
-              <motion.div
-                key={`meta-${activeChannel.id}`}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.2 }}
-                className="p-4 bg-[#0D1526] border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-white text-sm">{activeChannel.name}</span>
-                    <span className="px-2 py-0.5 text-[10px] rounded bg-slate-800 text-slate-300 border border-slate-700">
-                      ID: {activeChannel.id}
-                    </span>
-                  </div>
-                  <div className="text-slate-400 font-mono text-[11px] truncate max-w-md">
-                    URL: {activeChannel.streamUrl}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3 text-slate-300">
-                  <div className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="font-mono text-[11px]">Ao Vivo (HLS / M3U8)</span>
-                  </div>
-                  <button
-                    id="fav-btn-player"
-                    onClick={() => onToggleFavorite(activeChannel.id)}
-                    className={`p-1.5 rounded-lg border transition cursor-pointer ${
-                      activeChannel.isFavorite
-                        ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
-                        : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
-                    }`}
-                    title="Adicionar aos Favoritos"
-                  >
-                    <Star className={`w-4 h-4 ${activeChannel.isFavorite ? 'fill-amber-400' : ''}`} />
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Right Side: Channel List */}
-        <div className="w-full lg:w-5/12 xl:w-4/12 flex flex-col bg-[#0B1120] overflow-hidden">
-          <div className="p-3 bg-[#111A2E] border-b border-slate-800 flex items-center justify-between text-xs text-slate-300">
-            <span className="font-semibold flex items-center gap-2">
-              <span>Grade de Canais</span>
-              <span className="px-2 py-0.5 rounded-full bg-blue-600/20 text-blue-400 border border-blue-500/30 font-mono text-[10px] font-bold">
-                {filteredChannels.length}
-              </span>
-            </span>
-            <span className="text-[11px] text-slate-400 hidden sm:inline">
-              Otimizado para D-Pad / Touch
-            </span>
-          </div>
-
-          {selectedCategory === 'FAVORITOS' && (
-            <div className="px-3 py-2 bg-amber-950/40 border-b border-amber-500/30 flex items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-1.5 text-amber-200">
-                <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
-                <span className="font-semibold text-[11px] sm:text-xs">
-                  {favoriteChannels.length} canal(is) favorito(s)
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white">
+                  Painel de Gestão • IPTV Pro
+                </h2>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                  isMaster
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : isRevenda
+                    ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                    : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                }`}>
+                  {isMaster ? 'Admin Master' : isRevenda ? 'Admin Revenda' : 'Usuário Comum'}
                 </span>
               </div>
-              <button
-                id="export-favorites-banner-btn"
-                onClick={handleExportFavorites}
-                className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 transition shadow-sm active:scale-95 cursor-pointer"
-                title="Baixar arquivo JSON com os canais favoritos"
-              >
-                <Download className="w-3 h-3 text-slate-950" />
-                <span>Exportar JSON</span>
-              </button>
-            </div>
-          )}
-
-          <div className="p-2.5 bg-[#0E1528] border-b border-slate-800/80">
-            <div className="relative flex items-center">
-              <Search className="w-4 h-4 absolute left-3 text-slate-400 pointer-events-none" />
-              <input
-                id="channel-list-search-input"
-                type="text"
-                placeholder="Filtrar canais por nome em tempo real..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-9 pr-9 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-              />
-              {searchQuery && (
-                <button
-                  id="clear-channel-list-search-btn"
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/60 transition cursor-pointer"
-                  title="Limpar filtro"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-            {searchQuery && (
-              <div className="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 px-1">
-                <span>
-                  {filteredChannels.length === 0
-                    ? 'Nenhum canal corresponde ao filtro'
-                    : `${filteredChannels.length} canal(is) encontrado(s)`}
-                </span>
-                {selectedCategory !== 'TODOS' && (
-                  <button
-                    onClick={() => onSelectCategory('TODOS')}
-                    className="text-blue-400 hover:text-blue-300 underline text-[10px] cursor-pointer"
-                  >
-                    Buscar em todos
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
-            <AnimatePresence mode="wait">
-              {filteredChannels.length === 0 ? (
-                <motion.div
-                  key="empty-channels"
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ duration: 0.2 }}
-                  className="col-span-full py-14 text-center text-slate-400 space-y-2.5 px-4"
-                >
-                  {selectedCategory === 'FAVORITOS' ? (
-                    <>
-                      <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto text-amber-400">
-                        <Star className="w-6 h-6 fill-amber-400/25" />
-                      </div>
-                      <p className="text-sm font-bold text-slate-200">Nenhum canal favorito ainda</p>
-                      <p className="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
-                        Clique na estrela (⭐) no canal para adicioná-lo aos seus favoritos.
-                      </p>
-                      <button
-                        onClick={() => onSelectCategory('TODOS')}
-                        className="inline-flex items-center gap-1.5 mt-2 px-3.5 py-1.5 text-xs rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition cursor-pointer shadow-md shadow-blue-600/20"
-                      >
-                        <span>Explorar Canais</span>
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <Radio className="w-8 h-8 text-slate-500 mx-auto" />
-                      <p className="text-sm font-medium">Nenhum canal encontrado.</p>
-                      <p className="text-xs text-slate-500">
-                        {searchQuery
-                          ? `Nenhum canal com o nome "${searchQuery}" nesta categoria.`
-                          : 'Tente selecionar outra categoria ou importar uma nova lista.'}
-                      </p>
-                      {searchQuery && (
-                        <button
-                          onClick={() => setSearchQuery('')}
-                          className="inline-flex items-center gap-1.5 mt-2 px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/40 hover:bg-blue-600/30 transition cursor-pointer"
-                        >
-                          <X className="w-3 h-3" />
-                          <span>Limpar busca</span>
-                        </button>
-                      )}
-                    </>
-                  )}
-                </motion.div>
-              ) : (
-                <motion.div
-                  key={`grid-${selectedCategory}-${searchQuery}`}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.22, ease: 'easeOut' }}
-                  className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-2.5"
-                >
-                  {filteredChannels.map((channel, index) => {
-                    const isSelected = activeChannel?.id === channel.id;
-                    const isFocused = focusedIndex === index;
-
-                    return (
-                      <motion.div
-                        key={channel.id}
-                        id={`channel-card-${channel.id}`}
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.2, delay: Math.min(index * 0.015, 0.25) }}
-                        whileHover={{ scale: 1.015 }}
-                        whileTap={{ scale: 0.985 }}
-                        onClick={() => {
-                          setActiveChannel(channel);
-                          setFocusedIndex(index);
-                        }}
-                        className={`group relative p-3 rounded-xl border text-left cursor-pointer transition-all ${
-                          isSelected
-                            ? 'bg-blue-600/20 border-blue-500/70 shadow-lg shadow-blue-500/10 ring-1 ring-blue-500/40'
-                            : isFocused
-                            ? 'bg-slate-800/90 border-blue-400 ring-2 ring-blue-500/50'
-                            : 'bg-[#131C31] hover:bg-[#18233C] border-slate-800/80'
-                        }`}
-                      >
-                        {isSelected && (
-                          <motion.div
-                            layoutId="activeChannelGlow"
-                            className="absolute -left-0.5 top-2.5 bottom-2.5 w-1 bg-blue-500 rounded-r shadow-sm shadow-blue-400"
-                            transition={{ type: 'spring', stiffness: 450, damping: 35 }}
-                          />
-                        )}
-
-                        <div className="flex items-start gap-3">
-                          <div className="w-12 h-12 rounded-lg bg-slate-900 border border-slate-700/60 flex items-center justify-center p-1 shrink-0 overflow-hidden relative">
-                            {channel.logoUrl ? (
-                              <img
-                                src={channel.logoUrl}
-                                alt={channel.name}
-                                className="w-full h-full object-contain"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).src =
-                                    'https://placehold.co/100x100/1e293b/94a3b8?text=TV';
-                                }}
-                              />
-                            ) : (
-                              <Tv className="w-6 h-6 text-slate-500" />
-                            )}
-                          </div>
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between gap-1">
-                              <h3
-                                className={`text-xs font-bold truncate ${
-                                  isSelected ? 'text-blue-300' : 'text-slate-100'
-                                }`}
-                              >
-                                {channel.name}
-                              </h3>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onToggleFavorite(channel.id);
-                                }}
-                                className="text-slate-500 hover:text-amber-400 p-0.5 transition cursor-pointer"
-                              >
-                                <Star
-                                  className={`w-3.5 h-3.5 ${
-                                    channel.isFavorite ? 'fill-amber-400 text-amber-400' : ''
-                                  }`}
-                                />
-                              </button>
-                            </div>
-                            <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                              {channel.groupTitle || 'Geral'}
-                            </p>
-                            <div className="flex items-center justify-between mt-1">
-                              <span className="inline-block text-[9px] font-mono text-slate-400 uppercase">
-                                {channel.streamUrl.endsWith('.m3u8') ? 'HLS' : 'Stream'}
-                              </span>
-                              {isSelected && (
-                                <span className="flex items-center gap-1 text-[9px] font-bold text-blue-400">
-                                  <span className="flex items-end gap-0.5 h-2.5">
-                                    <span className="w-0.5 h-full bg-blue-400 rounded-full animate-pulse" />
-                                    <span className="w-0.5 h-2/3 bg-blue-400 rounded-full animate-pulse delay-75" />
-                                    <span className="w-0.5 h-4/5 bg-blue-400 rounded-full animate-pulse delay-150" />
-                                  </span>
-                                  <span>TOCANDO</span>
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    );
-                  })}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-      </div>
-
-      {/* Notification Toast */}
-      <AnimatePresence>
-        {exportNotification && (
-          <motion.div
-            initial={{ opacity: 0, y: -20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -20, scale: 0.95 }}
-            transition={{ duration: 0.2 }}
-            className={`fixed top-16 right-5 z-50 max-w-sm sm:max-w-md p-3.5 rounded-2xl border shadow-2xl backdrop-blur-md flex items-start gap-3 text-xs ${
-              exportNotification.type === 'success'
-                ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200'
-                : 'bg-amber-950/90 border-amber-500/50 text-amber-200'
-            }`}
-          >
-            {exportNotification.type === 'success' ? (
-              <div className="w-6 h-6 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
-              </div>
-            ) : (
-              <div className="w-6 h-6 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-              </div>
-            )}
-            <div className="flex-1 min-w-0">
-              <p className="font-bold text-white text-xs">
-                {exportNotification.type === 'success' ? 'Backup JSON Criado com Sucesso!' : 'Aviso de Favoritos'}
+              <p className="text-xs text-slate-400">
+                {isMaster 
+                  ? 'Controle total: gerencie revendedores, clientes e datas de vencimento.'
+                  : isRevenda
+                  ? 'Gestão de revenda: adicione clientes e controle as datas de validade.'
+                  : 'Detalhes da conta e vencimento do acesso.'}
               </p>
-              <p className="text-[11px] opacity-90 mt-0.5 leading-relaxed">{exportNotification.message}</p>
+            </div>
+          </div>
+          <button
+            id="close-admin-modal-btn"
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className={`px-5 py-2 text-xs flex items-center justify-between border-b ${
+          isMaster
+            ? 'bg-amber-950/30 text-amber-200 border-amber-800/40'
+            : isRevenda
+            ? 'bg-blue-950/30 text-blue-200 border-blue-800/40'
+            : 'bg-slate-900 text-slate-300 border-slate-800'
+        }`}>
+          <div className="flex items-center gap-2">
+            <Shield className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {isMaster 
+                ? 'Você possui autoridade de AdminMaster: pode adicionar ou remover revendedores e clientes livremente.'
+                : isRevenda
+                ? 'Você está no modo AdminRevenda: permissão concedida exclusivamente para gerenciar Usuários Comuns (Clientes).'
+                : 'Sua conta é de Usuário Comum. O painel de gestão requer acesso AdminMaster ou AdminRevenda.'}
+            </span>
+          </div>
+
+          {isMaster ? (
+            <div className="flex items-center gap-2 bg-slate-900/60 px-2 py-0.5 rounded-lg border border-slate-700/60">
+              <span className="text-slate-300 font-medium text-[10px]">
+                Cadastros Públicos:
+              </span>
+              <button
+                id="toggle-registration-btn"
+                onClick={handleToggleRegistration}
+                disabled={settingLoading}
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-bold text-[9px] uppercase transition cursor-pointer ${
+                  allowRegistration
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                }`}
+                title="Ativar ou desativar tela de cadastro aberta no app"
+              >
+                {allowRegistration ? (
+                  <>
+                    <ToggleRight className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Abertos</span>
+                  </>
+                ) : (
+                  <>
+                    <ToggleLeft className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Fechados</span>
+                  </>
+                )}
+              </button>
+            </div>
+          ) : (
+            <span className="text-[11px] text-slate-400 font-mono">
+              Revendedor: @{currentAdmin.username}
+            </span>
+          )}
+        </div>
+
+        {/* DASHBOARD DE TOPO — visão rápida para o AdminMaster */}
+        {isMaster && activeTab === 'list' && (
+          <div className="px-5 pt-4 pb-3 bg-[#0A1020] border-b border-slate-800">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              <button
+                onClick={() => setFilterRole('all')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'all'
+                    ? 'bg-blue-600/20 border-blue-500/60 ring-1 ring-blue-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Ver todos os usuários"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-semibold uppercase tracking-wide">
+                  <Users className="w-3 h-3" />
+                  Total
+                </div>
+                <div className="text-lg font-bold text-white mt-0.5">{totalUsers}</div>
+              </button>
+
+              <button
+                onClick={() => setFilterRole('UsuarioComum')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'UsuarioComum'
+                    ? 'bg-emerald-600/20 border-emerald-500/60 ring-1 ring-emerald-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Clientes ativos (não vencidos, não bloqueados)"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-semibold uppercase tracking-wide">
+                  <UserCheck className="w-3 h-3" />
+                  Ativos
+                </div>
+                <div className="text-lg font-bold text-emerald-300 mt-0.5">{activeClients}</div>
+              </button>
+
+              <button
+                onClick={() => setFilterRole('expiring7')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'expiring7'
+                    ? 'bg-amber-600/20 border-amber-500/60 ring-1 ring-amber-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Clientes que vencem nos próximos 7 dias"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-semibold uppercase tracking-wide">
+                  <TrendingUp className="w-3 h-3" />
+                  Vencendo 7d
+                </div>
+                <div className={`text-lg font-bold mt-0.5 ${expiring7Users > 0 ? 'text-amber-300' : 'text-slate-500'}`}>
+                  {expiring7Users}
+                </div>
+              </button>
+
+              <button
+                onClick={() => setFilterRole('expired')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'expired'
+                    ? 'bg-rose-600/20 border-rose-500/60 ring-1 ring-rose-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Clientes com acesso vencido"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-rose-400 font-semibold uppercase tracking-wide">
+                  <Clock className="w-3 h-3" />
+                  Vencidos
+                </div>
+                <div className={`text-lg font-bold mt-0.5 ${expiredUsers > 0 ? 'text-rose-300' : 'text-slate-500'}`}>
+                  {expiredUsers}
+                </div>
+              </button>
+
+              <button
+                onClick={() => setFilterRole('AdminRevenda')}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                  filterRole === 'AdminRevenda'
+                    ? 'bg-blue-600/20 border-blue-500/60 ring-1 ring-blue-500/40'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                }`}
+                title="Revendedores cadastrados"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-blue-400 font-semibold uppercase tracking-wide">
+                  <Briefcase className="w-3 h-3" />
+                  Revendas
+                </div>
+                <div className="text-lg font-bold text-blue-300 mt-0.5">{revendaUsers}</div>
+              </button>
+
+              <div
+                className="p-2.5 rounded-xl border bg-[#121A30] border-slate-800"
+                title="Usuários bloqueados"
+              >
+                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-semibold uppercase tracking-wide">
+                  <UserX className="w-3 h-3" />
+                  Bloqueados
+                </div>
+                <div className={`text-lg font-bold mt-0.5 ${blockedUsersCount > 0 ? 'text-slate-300' : 'text-slate-500'}`}>
+                  {blockedUsersCount}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="px-5 bg-[#0E1628] border-b border-slate-800/80 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1 sm:gap-2">
+            <button
+              id="admin-tab-list"
+              type="button"
+              onClick={() => {
+                setActiveTab('list');
+                setFeedbackMsg(null);
+                setPendingDeleteId(null);
+              }}
+              className={`flex items-center gap-2 py-3 px-3 border-b-2 text-xs font-semibold transition cursor-pointer ${
+                activeTab === 'list'
+                  ? 'border-blue-500 text-white bg-blue-500/5'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Users className="w-4 h-4 text-blue-400" />
+              <span>Lista de Usuários</span>
+              <span className="px-1.5 py-0.5 rounded-md bg-slate-800 text-[10px] text-slate-300 font-mono">
+                {totalUsers}
+              </span>
+            </button>
+
+            <button
+              id="admin-tab-create"
+              type="button"
+              onClick={() => {
+                setActiveTab('create');
+                setFeedbackMsg(null);
+              }}
+              className={`flex items-center gap-2 py-3 px-3 border-b-2 text-xs font-semibold transition cursor-pointer ${
+                activeTab === 'create'
+                  ? 'border-emerald-500 text-white bg-emerald-500/5'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <UserPlus className="w-4 h-4 text-emerald-400" />
+              <span>{isRevenda ? '+ Novo Cliente' : '+ Criar Novo Usuário'}</span>
+            </button>
+          </div>
+
+          <button
+            onClick={fetchUsers}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 transition cursor-pointer"
+            title="Atualizar lista"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-blue-400' : ''}`} />
+            <span className="hidden sm:inline">Atualizar</span>
+          </button>
+        </div>
+
+        {feedbackMsg && (
+          <div className={`px-5 py-2.5 text-xs flex items-center justify-between border-b transition-all ${
+            feedbackMsg.type === 'success'
+              ? 'bg-emerald-950/80 text-emerald-200 border-emerald-800/80'
+              : 'bg-rose-950/80 text-rose-200 border-rose-800/80'
+          }`}>
+            <div className="flex items-center gap-2">
+              {feedbackMsg.type === 'success' ? (
+                <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              )}
+              <span>{feedbackMsg.text}</span>
             </div>
             <button
-              onClick={() => setExportNotification(null)}
-              className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition cursor-pointer"
+              onClick={() => setFeedbackMsg(null)}
+              className="text-slate-400 hover:text-white p-0.5 cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
 
-      <TvRemoteOverlay
-        isOpen={isRemoteOpen}
-        onClose={() => setIsRemoteOpen(false)}
-        onNavigate={handleRemoteNavigate}
-        onSelect={handleRemoteSelect}
-        onBack={() => { setIsRemoteOpen(false); }}
-        onTogglePlay={togglePlay}
-        isPlaying={isPlaying}
-        onToggleMute={toggleMute}
-        isMuted={isMuted}
-        onNextChannel={handleNextChannel}
-        onPrevChannel={handlePrevChannel}
-        onToggleAspectRatio={cycleAspectRatio}
-      />
+        {activeTab === 'list' && (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="p-4 bg-[#0B1120] border-b border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  id="admin-search-users-input"
+                  type="text"
+                  placeholder="Buscar por nome, @login ou email..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 transition"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-0.5 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 custom-scrollbar">
+                <button
+                  onClick={() => setFilterRole('all')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'all'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Todos ({totalUsers})
+                </button>
+
+                <button
+                  onClick={() => setFilterRole('UsuarioComum')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'UsuarioComum'
+                      ? 'bg-slate-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Clientes ({clientUsers})
+                </button>
+
+                <button
+                  onClick={() => setFilterRole('expiring7')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 flex items-center gap-1 ${
+                    filterRole === 'expiring7'
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-slate-800 text-amber-400 hover:text-amber-300'
+                  }`}
+                >
+                  <TrendingUp className="w-3 h-3" />
+                  Vencendo 7d ({expiring7Users})
+                </button>
+
+                <button
+                  onClick={() => setFilterRole('AdminRevenda')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'AdminRevenda'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Revendas ({revendaUsers})
+                </button>
+
+                {isMaster && (
+                  <button
+                    onClick={() => setFilterRole('AdminMaster')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                      filterRole === 'AdminMaster'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Masters ({masterUsers})
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setFilterRole('expired')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 flex items-center gap-1 ${
+                    filterRole === 'expired'
+                      ? 'bg-rose-600 text-white'
+                      : 'bg-slate-800 text-rose-400 hover:text-rose-300'
+                  }`}
+                >
+                  <Clock className="w-3 h-3" />
+                  Vencidos ({expiredUsers})
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2.5 custom-scrollbar">
+              {loading && users.length === 0 ? (
+                <div className="py-12 flex flex-col items-center justify-center text-slate-400 gap-2">
+                  <RefreshCw className="w-6 h-6 animate-spin text-blue-500" />
+                  <span className="text-xs">Carregando usuários do sistema...</span>
+                </div>
+              ) : filteredUsers.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <Users className="w-8 h-8 mx-auto text-slate-600" />
+                  <p className="text-xs">
+                    {searchQuery ? `Nenhum usuário encontrado para "${searchQuery}".` : 'Nenhum usuário cadastrado nesta categoria.'}
+                  </p>
+                  <button
+                    onClick={() => setActiveTab('create')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 mt-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>{isRevenda ? 'Cadastrar Novo Cliente' : 'Criar Novo Usuário'}</span>
+                  </button>
+                </div>
+              ) : (
+                filteredUsers.map((user) => {
+                  const role = normalizeUserRole(user.role);
+                  const isMe = user.id === currentAdmin.id;
+                  const isActionRunning = actionLoadingId === user.id;
+                  const isPendingDelete = pendingDeleteId === user.id;
+                  const isCopied = copiedUserId === user.id;
+                  const expInfo = getExpirationInfo(user.expirationDate);
+                  const userNotes = (user as any).notes;
+
+                  const canEdit = isMaster || (isRevenda && (role === 'UsuarioComum' || isMe));
+                  const canDelete = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
+                  const canBlock = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
+                  const canRenew = role === 'UsuarioComum' || isMaster;
+
+                  return (
+                    <div
+                      key={user.id}
+                      id={`user-row-${user.id}`}
+                      className={`p-3.5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-3 transition ${
+                        isPendingDelete
+                          ? 'bg-rose-950/40 border-rose-500/70 ring-2 ring-rose-500/40'
+                          : user.isBlocked
+                          ? 'bg-rose-950/20 border-rose-900/50'
+                          : expInfo.isExpired
+                          ? 'bg-amber-950/15 border-amber-900/40'
+                          : role === 'AdminMaster'
+                          ? 'bg-[#151D33] border-amber-500/30'
+                          : role === 'AdminRevenda'
+                          ? 'bg-[#121B32] border-blue-500/30'
+                          : 'bg-[#121A30] border-slate-800/80 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border ${
+                          user.isBlocked
+                            ? 'bg-rose-900/30 border-rose-700/50 text-rose-300'
+                            : role === 'AdminMaster'
+                            ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                            : role === 'AdminRevenda'
+                            ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                            : 'bg-slate-800 border-slate-700 text-slate-300'
+                        }`}>
+                          {role === 'AdminMaster' ? (
+                            <Crown className="w-5 h-5" />
+                          ) : role === 'AdminRevenda' ? (
+                            <Briefcase className="w-4 h-4" />
+                          ) : (
+                            user.name ? user.name.charAt(0).toUpperCase() : 'U'
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-white text-xs truncate">
+                              {user.name}
+                            </span>
+                            <span className="text-[11px] text-slate-400 font-mono">
+                              @{user.username}
+                            </span>
+
+                            {role === 'AdminMaster' && (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Crown className="w-2.5 h-2.5" />
+                                Admin Master
+                              </span>
+                            )}
+
+                            {role === 'AdminRevenda' && (
+                              <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Briefcase className="w-2.5 h-2.5" />
+                                Admin Revenda
+                              </span>
+                            )}
+
+                            {role === 'UsuarioComum' && (
+                              <span className="px-2 py-0.5 rounded-full bg-slate-700/60 text-slate-300 border border-slate-600/50 text-[10px] font-semibold flex items-center gap-1">
+                                <UserIcon className="w-2.5 h-2.5 text-slate-400" />
+                                Cliente
+                              </span>
+                            )}
+
+                            {expInfo.status === 'vitalicio' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Sparkles className="w-2.5 h-2.5" />
+                                Vitalício
+                              </span>
+                            ) : expInfo.isExpired ? (
+                              <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center gap-1 animate-pulse">
+                                <Clock className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            ) : expInfo.isExpiring7 ? (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <AlertTriangle className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Calendar className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            )}
+
+                            {user.isBlocked && (
+                              <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Lock className="w-2.5 h-2.5" />
+                                Bloqueado
+                              </span>
+                            )}
+
+                            {user.playlistUrl && (
+                              <span
+                                className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-semibold flex items-center gap-1 max-w-[140px] truncate"
+                                title={`Lista vinculada: ${user.playlistName || user.playlistUrl}`}
+                              >
+                                <Tv className="w-2.5 h-2.5 shrink-0" />
+                                <span className="truncate">{user.playlistName || 'Lista IPTV'}</span>
+                              </span>
+                            )}
+
+                            {userNotes && (
+                              <span
+                                className="px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 text-[10px] font-semibold flex items-center gap-1"
+                                title={`Anotação: ${userNotes}`}
+                              >
+                                <StickyNote className="w-2.5 h-2.5" />
+                                <span>Nota</span>
+                              </span>
+                            )}
+
+                            {isMe && (
+                              <span className="text-[10px] text-slate-500 italic">
+                                (Você)
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-1 flex-wrap">
+                            {user.email && <span>{user.email}</span>}
+                            {user.createdBy && (
+                              <span className="text-[10px] text-blue-300/80 bg-blue-950/40 px-1.5 py-0.5 rounded border border-blue-900/40">
+                                Criado por: @{user.createdBy}
+                              </span>
+                            )}
+                            {user.createdAt && (
+                              <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                                <Calendar className="w-3 h-3" />
+                                Cadastrado em {new Date(user.createdAt).toLocaleDateString('pt-BR')}
+                              </span>
+                            )}
+                          </div>
+
+                          {userNotes && (
+                            <div className="mt-1.5 text-[11px] text-yellow-200/90 bg-yellow-950/20 border border-yellow-900/40 rounded-lg px-2 py-1 flex items-start gap-1.5">
+                              <StickyNote className="w-3 h-3 text-yellow-400 shrink-0 mt-0.5" />
+                              <span className="italic">{userNotes}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                        {isPendingDelete ? (
+                          <>
+                            <span className="text-[11px] text-rose-200 font-bold px-1">
+                              Excluir @{user.username}?
+                            </span>
+                            <button
+                              id={`confirm-delete-${user.id}`}
+                              onClick={() => handleConfirmDelete(user)}
+                              disabled={isActionRunning}
+                              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-md shadow-rose-600/30 transition cursor-pointer active:scale-95 disabled:opacity-50"
+                            >
+                              {isActionRunning ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                              <span>Sim, excluir</span>
+                            </button>
+                            <button
+                              id={`cancel-delete-${user.id}`}
+                              onClick={() => setPendingDeleteId(null)}
+                              disabled={isActionRunning}
+                              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 transition cursor-pointer"
+                            >
+                              Cancelar
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              id={`copy-credentials-${user.id}`}
+                              onClick={() => handleCopyUserCredentials(user)}
+                              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                                isCopied
+                                  ? 'bg-emerald-600/30 text-emerald-200 border-emerald-500/60'
+                                  : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 border-slate-700'
+                              }`}
+                              title="Copiar credenciais para enviar ao cliente"
+                            >
+                              {isCopied ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">Copiado</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">Credenciais</span>
+                                </>
+                              )}
+                            </button>
+
+                            {canRenew && (
+                              <button
+                                id={`quick-renew-${user.id}`}
+                                onClick={() => handleQuickRenew(user, 30)}
+                                disabled={isActionRunning}
+                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 transition cursor-pointer"
+                                title="Renovar +30 dias de acesso"
+                              >
+                                <CalendarPlus className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>+30d</span>
+                              </button>
+                            )}
+
+                            {canEdit ? (
+                              <button
+                                id={`edit-user-${user.id}`}
+                                onClick={() => handleOpenEdit(user)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 transition cursor-pointer"
+                                title="Editar dados, validade, senha e anotações"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                                <span>Editar</span>
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-500 px-2 py-1 bg-slate-900/50 rounded-lg border border-slate-800">
+                                Sem Permissão
+                              </span>
+                            )}
+
+                            {canBlock && (
+                              <button
+                                id={`toggle-block-${user.id}`}
+                                onClick={() => handleToggleBlock(user)}
+                                disabled={isActionRunning}
+                                className={`p-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                                  user.isBlocked
+                                    ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
+                                    : 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
+                                }`}
+                                title={user.isBlocked ? 'Desbloquear acesso' : 'Bloquear acesso do usuário'}
+                              >
+                                {isActionRunning ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : user.isBlocked ? (
+                                  <Unlock className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Lock className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+
+                            {canDelete && (
+                              <button
+                                id={`delete-user-${user.id}`}
+                                onClick={() => handleRequestDelete(user)}
+                                disabled={isActionRunning}
+                                className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80 hover:border-rose-500/40 transition cursor-pointer"
+                                title={role === 'AdminRevenda' ? 'Excluir Revendedor (Apenas Master)' : 'Excluir conta definitivamente'}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'create' && (
+          <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
+            <div className="max-w-2xl mx-auto space-y-4">
+              <div className="p-4 rounded-xl bg-[#0E1628] border border-slate-800">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <UserPlus className="w-4 h-4 text-emerald-400" />
+                  <span>
+                    {isRevenda ? 'Cadastrar Novo Cliente (Usuário Comum)' : 'Cadastrar Novo Usuário ou Revendedor'}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Defina o cargo, credenciais de acesso, data de validade/vencimento e lista M3U.
+                </p>
+              </div>
+
+              <form onSubmit={handleCreateUserSubmit} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome Completo ou Apelido
+                    </label>
+                    <input
+                      id="admin-create-name"
+                      type="text"
+                      placeholder="Ex: João Silva"
+                      value={formName}
+                      onChange={(e) => setFormName(e.target.value)}
+                      className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome de Usuário (Login)
+                    </label>
+                    <div className="relative">
+                      <span className="text-slate-400 font-mono text-xs absolute left-3 top-1/2 -translate-y-1/2">@</span>
+                      <input
+                        id="admin-create-username"
+                        type="text"
+                        placeholder="joaosilva"
+                        value={formUsername}
+                        onChange={(e) => setFormUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      E-mail <span className="text-slate-500 font-normal">(opcional)</span>
+                    </label>
+                    <input
+                      id="admin-create-email"
+                      type="email"
+                      placeholder="cliente@email.com"
+                      value={formEmail}
+                      onChange={(e) => setFormEmail(e.target.value)}
+                      className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-semibold text-slate-300">
+                        Senha de Acesso
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleGeneratePassword}
+                        className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer hover:underline"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Gerar Senha</span>
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input
+                        id="admin-create-password"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="Mínimo 4 caracteres"
+                        value={formPassword}
+                        onChange={(e) => setFormPassword(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 pr-10 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer p-1"
+                        title={showPassword ? 'Ocultar senha' : 'Exibir senha'}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/70 border border-slate-700/70 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-emerald-300 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Data de Vencimento do Cliente</span>
+                    </label>
+                    <span className="text-[11px] text-slate-400">
+                      {formExpirationDate ? formatDateDisplay(formExpirationDate) : 'Vitalício'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      id="admin-create-expiration"
+                      type="date"
+                      value={formExpirationDate}
+                      onChange={(e) => setFormExpirationDate(e.target.value)}
+                      className="bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(30)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +30 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(60)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +60 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(90)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +90 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(365)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +1 Ano
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormExpirationDate('')}
+                        className="px-2.5 py-1.5 rounded-lg bg-purple-900/30 hover:bg-purple-900/50 text-[11px] font-semibold text-purple-300 border border-purple-700/50 transition cursor-pointer"
+                      >
+                        Vitalício
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Após essa data, o cliente não conseguirá mais efetuar login ou carregar os canais até que sua conta seja renovada.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Nível de Acesso (Cargo no Sistema)
+                  </label>
+
+                  {isRevenda ? (
+                    <div className="p-3 rounded-xl bg-blue-950/20 border border-blue-500/30 flex items-start gap-2.5">
+                      <Briefcase className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="text-xs font-bold text-white">Usuário Comum (Cliente Final)</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Como <strong>AdminRevenda</strong>, todas as contas cadastradas por você são clientes finais. Apenas o AdminMaster tem permissão para cadastrar ou remover outros revendedores.
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'UsuarioComum'
+                          ? 'bg-slate-700/40 border-emerald-500/80 ring-1 ring-emerald-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'UsuarioComum'}
+                          onChange={() => setFormRole('UsuarioComum')}
+                          className="mt-0.5 text-emerald-500 focus:ring-emerald-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <UserIcon className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Usuário Comum</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Cliente final com player e canais ao vivo.
+                          </div>
+                        </div>
+                      </label>
+
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'AdminRevenda'
+                          ? 'bg-blue-600/15 border-blue-500/80 ring-1 ring-blue-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'AdminRevenda'}
+                          onChange={() => setFormRole('AdminRevenda')}
+                          className="mt-0.5 text-blue-600 focus:ring-blue-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                            <span>Admin Revenda</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Pode adicionar e gerenciar clientes comuns.
+                          </div>
+                        </div>
+                      </label>
+
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'AdminMaster'
+                          ? 'bg-amber-600/15 border-amber-500/80 ring-1 ring-amber-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'AdminMaster'}
+                          onChange={() => setFormRole('AdminMaster')}
+                          className="mt-0.5 text-amber-500 focus:ring-amber-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <Crown className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Admin Master</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Conta principal com controle irrestrito.
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-700/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">
+                      <Tv className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Vincular Lista M3U ao Cliente</span>
+                    </label>
+                    <span className="text-[10px] text-slate-400">(Opcional)</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-1">
+                      <input
+                        id="admin-create-playlist-name"
+                        type="text"
+                        placeholder="Nome (ex: Canais VIP)"
+                        value={formPlaylistName}
+                        onChange={(e) => setFormPlaylistName(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <input
+                        id="admin-create-playlist-url"
+                        type="url"
+                        placeholder="https://exemplo.com/lista.m3u"
+                        value={formPlaylistUrl}
+                        onChange={(e) => setFormPlaylistUrl(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-[11px]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-yellow-950/20 border border-yellow-800/40 space-y-2">
+                  <label className="text-xs font-semibold text-yellow-300 flex items-center gap-1.5">
+                    <StickyNote className="w-3.5 h-3.5 text-yellow-400" />
+                    <span>Anotações Internas</span>
+                    <span className="text-[10px] text-yellow-500/70 font-normal">(só você vê)</span>
+                  </label>
+                  <textarea
+                    id="admin-create-notes"
+                    rows={2}
+                    placeholder="Ex: Cliente pagou via PIX dia 15. Prefere contato à noite. Reclamou do canal X."
+                    value={formNotes}
+                    onChange={(e) => setFormNotes(e.target.value)}
+                    className="w-full bg-[#162035] border border-yellow-800/40 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 resize-none"
+                  />
+                </div>
+
+                <button
+                  id="admin-submit-create-user"
+                  type="submit"
+                  disabled={isSubmittingNewUser}
+                  className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-lg shadow-emerald-600/30 transition flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
+                >
+                  {isSubmittingNewUser ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <UserPlus className="w-4 h-4" />
+                      <span>Cadastrar e Liberar Acesso</span>
+                    </>
+                  )}
+                </button>
+              </form>
+
+              {lastCreatedUser && (
+                <div className="p-4 rounded-xl bg-slate-900 border border-emerald-500/40 space-y-2.5 animate-in fade-in duration-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                      <CheckCircle className="w-4 h-4" />
+                      Dados do Usuário Cadastrado
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCopyLastCreated}
+                      className="flex items-center gap-1 text-[11px] font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-lg border border-slate-700 transition cursor-pointer"
+                    >
+                      {copiedCredentials ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Copiado!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copiar Acesso para Cliente</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2.5 bg-black/40 rounded-lg text-xs font-mono text-slate-300">
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">USUÁRIO:</span>
+                      <span className="text-white font-bold">{lastCreatedUser.username}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">SENHA:</span>
+                      <span className="text-emerald-300 font-bold">{lastCreatedUser.password}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">CARGO:</span>
+                      <span className="text-blue-300 font-bold">{lastCreatedUser.role}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">VENCIMENTO:</span>
+                      <span className="text-amber-300 font-bold">
+                        {lastCreatedUser.expirationDate ? formatDateDisplay(lastCreatedUser.expirationDate) : 'Vitalício'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <button
+                      onClick={() => setActiveTab('list')}
+                      className="text-xs text-blue-400 hover:text-blue-300 font-medium hover:underline cursor-pointer"
+                    >
+                      Ver na lista de usuários →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="px-5 py-3 bg-[#111A2E] border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+          <p className="text-[11px]">
+            {isMaster 
+              ? 'Painel Master: Controle hierárquico ativo com bloqueio instantâneo e revogação de tokens.'
+              : 'Painel Revenda: Gerencie a validade e acesso dos seus clientes com agilidade.'}
+          </p>
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-medium transition cursor-pointer"
+          >
+            Fechar
+          </button>
+        </div>
+
+        {editingUser && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3">
+            <div className="w-full max-w-lg bg-[#0F172A] border border-blue-500/40 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+              <div className="px-5 py-3.5 bg-[#14203A] border-b border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/40 text-blue-400 flex items-center justify-center">
+                    <Pencil className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">Editar Dados & Validade</h4>
+                    <span className="text-[11px] text-slate-400 font-mono">@{editingUser.username}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingUser(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveEdit} className="p-5 space-y-3.5 max-h-[80vh] overflow-y-auto custom-scrollbar">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome Completo
+                    </label>
+                    <input
+                      id="edit-user-name"
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome de Usuário (Login)
+                    </label>
+                    <div className="relative">
+                      <span className="text-slate-400 font-mono text-xs absolute left-3 top-1/2 -translate-y-1/2">@</span>
+                      <input
+                        id="edit-user-username"
+                        type="text"
+                        value={editUsername}
+                        onChange={(e) => setEditUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    E-mail <span className="text-slate-500 font-normal">(opcional)</span>
+                  </label>
+                  <input
+                    id="edit-user-email"
+                    type="email"
+                    value={editEmail}
+                    onChange={(e) => setEditEmail(e.target.value)}
+                    placeholder="email@exemplo.com"
+                    className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/80 border border-emerald-500/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                      <Calendar className="w-4 h-4 text-emerald-400" />
+                      <span>Alterar Data de Vencimento do Cliente</span>
+                    </label>
+                    <span className="text-[11px] font-mono text-emerald-300">
+                      {editExpirationDate ? formatDateDisplay(editExpirationDate) : 'Vitalício'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      id="edit-user-expiration"
+                      type="date"
+                      value={editExpirationDate}
+                      onChange={(e) => setEditExpirationDate(e.target.value)}
+                      className="bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(30)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 30 dias"
+                      >
+                        +30d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(60)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 60 dias"
+                      >
+                        +60d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(90)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 90 dias"
+                      >
+                        +90d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(365)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 1 ano"
+                      >
+                        +1a
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditExpirationDate('')}
+                        className="px-2 py-1 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 text-[11px] font-semibold text-purple-300 border border-purple-700/50 cursor-pointer"
+                        title="Remover data e deixar vitalício"
+                      >
+                        Vitalício
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Cargo / Nível de Acesso
+                  </label>
+
+                  {isMaster ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'UsuarioComum' ? 'bg-slate-700/40 border-emerald-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'UsuarioComum'}
+                          onChange={() => setEditRole('UsuarioComum')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Cliente</span>
+                      </label>
+
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'AdminRevenda' ? 'bg-blue-600/20 border-blue-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'AdminRevenda'}
+                          onChange={() => setEditRole('AdminRevenda')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Revenda</span>
+                      </label>
+
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'AdminMaster' ? 'bg-amber-600/20 border-amber-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'AdminMaster'}
+                          onChange={() => setEditRole('AdminMaster')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Master</span>
+                      </label>
+                    </div>
+                  ) : (
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-300 flex items-center justify-between">
+                      <span>Cargo Atual: <strong>{normalizeUserRole(editingUser.role)}</strong></span>
+                      <span className="text-[10px] text-slate-500">Alteração exclusiva do AdminMaster</span>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-300">
+                      Redefinir Senha <span className="text-slate-500 font-normal">(deixe vazio para manter a atual)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleGenerateEditPassword}
+                      className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer hover:underline"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      <span>Gerar Senha</span>
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <input
+                      id="edit-user-password"
+                      type={editShowPassword ? 'text' : 'password'}
+                      value={editPassword}
+                      onChange={(e) => setEditPassword(e.target.value)}
+                      placeholder="Digite uma nova senha (mínimo 4 caracteres)"
+                      className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 pr-10 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setEditShowPassword(!editShowPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer p-1"
+                      title={editShowPassword ? 'Ocultar senha' : 'Exibir senha'}
+                    >
+                      {editShowPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-700/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">
+                      <Tv className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Lista M3U Vinculada</span>
+                    </label>
+                    {editPlaylistUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditPlaylistUrl('');
+                          setEditPlaylistName('');
+                        }}
+                        className="text-[10px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                      >
+                        Desvincular Lista
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-1">
+                      <input
+                        id="edit-user-playlist-name"
+                        type="text"
+                        placeholder="Nome da Lista"
+                        value={editPlaylistName}
+                        onChange={(e) => setEditPlaylistName(e.target.value)}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <input
+                        id="edit-user-playlist-url"
+                        type="url"
+                        placeholder="https://exemplo.com/lista.m3u"
+                        value={editPlaylistUrl}
+                        onChange={(e) => setEditPlaylistUrl(e.target.value)}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-[11px]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-yellow-950/20 border border-yellow-800/40 space-y-2">
+                  <label className="text-xs font-semibold text-yellow-300 flex items-center gap-1.5">
+                    <StickyNote className="w-3.5 h-3.5 text-yellow-400" />
+                    <span>Anotações Internas</span>
+                    <span className="text-[10px] text-yellow-500/70 font-normal">(só você vê)</span>
+                  </label>
+                  <textarea
+                    id="edit-user-notes"
+                    rows={3}
+                    placeholder="Ex: Cliente pagou via PIX dia 15. Prefere contato à noite."
+                    value={editNotes}
+                    onChange={(e) => setEditNotes(e.target.value)}
+                    className="w-full bg-[#1A2642] border border-yellow-800/40 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 resize-none"
+                  />
+                </div>
+
+                {editingUser.id !== currentAdmin.id && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Status de Acesso
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setEditIsBlocked(!editIsBlocked)}
+                      className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
+                        editIsBlocked
+                          ? 'bg-rose-950/30 border-rose-500/50 text-rose-300'
+                          : 'bg-emerald-950/30 border-emerald-500/50 text-emerald-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {editIsBlocked ? <Lock className="w-4 h-4 text-rose-400" /> : <CheckCircle className="w-4 h-4 text-emerald-400" />}
+                        <span>{editIsBlocked ? 'Conta Bloqueada' : 'Conta Ativa e Liberada'}</span>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/10">
+                        {editIsBlocked ? 'Clique para desbloquear' : 'Clique para bloquear'}
+                      </span>
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setEditingUser(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-medium transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    id="save-edit-user-btn"
+                    type="submit"
+                    disabled={isSavingEdit}
+                    className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs text-white font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                  >
+                    {isSavingEdit ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    <span>Salvar Alterações</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
