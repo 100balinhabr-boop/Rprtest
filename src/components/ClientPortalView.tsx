@@ -58,6 +58,66 @@ interface ClientPortalViewProps {
 
 type ClientTab = 'movies' | 'series' | 'live' | 'settings';
 
+// Helper: embaralhar array (Fisher-Yates)
+function shuffleArray<T>(arr: T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+// Helper: construir 8 fileiras (3 top + 5 aleatórias)
+function buildRows(
+  items: VodItem[],
+  topTitles: Array<{ title: string; emoji: string }>,
+  randomTitles: Array<{ title: string; emoji: string }>
+) {
+  if (!items || items.length === 0) return [];
+
+  const rows: Array<{ title: string; emoji: string; items: VodItem[]; kind: 'top' | 'random' }> = [];
+
+  // Ordena todos por rating desc
+  const sorted = [...items].sort((a, b) => (b.rating || 0) - (a.rating || 0));
+
+  // Pool de top: prefere quem tem rating >= 7, senão usa os melhores disponíveis
+  let topPool = sorted.filter((m) => (m.rating || 0) >= 7);
+  if (topPool.length < 6) {
+    topPool = sorted;
+  }
+
+  // Divide o pool em 3 blocos para as 3 fileiras de top
+  const chunkSize = Math.max(8, Math.ceil(topPool.length / 3));
+  for (let i = 0; i < 3; i++) {
+    const start = i * chunkSize;
+    const end = start + chunkSize;
+    const chunk = topPool.slice(start, end);
+    if (chunk.length === 0) continue;
+    rows.push({
+      title: topTitles[i]?.title || `Top ${i + 1}`,
+      emoji: topTitles[i]?.emoji || '⭐',
+      items: chunk,
+      kind: 'top',
+    });
+  }
+
+  // 5 fileiras aleatórias
+  for (let i = 0; i < 5; i++) {
+    const shuffled = shuffleArray(items);
+    const chunk = shuffled.slice(0, 20);
+    if (chunk.length === 0) continue;
+    rows.push({
+      title: randomTitles[i]?.title || `Aleatórios ${i + 1}`,
+      emoji: randomTitles[i]?.emoji || '🎲',
+      items: chunk,
+      kind: 'random',
+    });
+  }
+
+  return rows;
+}
+
 export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   channels,
   categories,
@@ -686,6 +746,46 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return allSeries.filter((s) => s.title.toLowerCase().includes(query) || s.genre.toLowerCase().includes(query));
   }, [isXtream, selectedSeriesCat, xtreamStreamsCache, allSeries, searchQuery]);
 
+  // 8 fileiras de filmes: 3 top + 5 aleatórias
+  const movieRows = useMemo(() => {
+    if (searchQuery.trim()) return [];
+    return buildRows(
+      displayedMovies,
+      [
+        { title: 'Melhores Avaliados', emoji: '⭐' },
+        { title: 'Destaques Premium', emoji: '👑' },
+        { title: 'Bem Cotados', emoji: '🔥' },
+      ],
+      [
+        { title: 'Descubra Aleatórios', emoji: '🎲' },
+        { title: 'Surpreenda-se', emoji: '🎯' },
+        { title: 'Para Você', emoji: '💫' },
+        { title: 'Explorar', emoji: '🧭' },
+        { title: 'Sugestões do Dia', emoji: '✨' },
+      ]
+    );
+  }, [displayedMovies, searchQuery]);
+
+  // 8 fileiras de séries: 3 top + 5 aleatórias
+  const seriesRows = useMemo(() => {
+    if (searchQuery.trim()) return [];
+    return buildRows(
+      displayedSeries,
+      [
+        { title: 'Melhores Avaliadas', emoji: '⭐' },
+        { title: 'Destaques Premium', emoji: '👑' },
+        { title: 'Bem Cotadas', emoji: '🔥' },
+      ],
+      [
+        { title: 'Descubra Aleatórias', emoji: '🎲' },
+        { title: 'Surpreenda-se', emoji: '🎯' },
+        { title: 'Para Você', emoji: '💫' },
+        { title: 'Explorar', emoji: '🧭' },
+        { title: 'Sugestões do Dia', emoji: '✨' },
+      ]
+    );
+  }, [displayedSeries, searchQuery]);
+
   const channelsForSelectedCategory = useMemo(() => {
     if (isXtream && selectedLiveCat && activeCategory === selectedLiveCat.name) {
       const items = (xtreamStreamsCache[`live_${selectedLiveCat.id}`] || []) as Channel[];
@@ -715,32 +815,14 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   }, [isXtream, selectedLiveCat, activeCategory, xtreamStreamsCache, liveChannelsList, favoriteChannels, recentChannels, searchQuery]);
 
   const [channelDisplayLimit, setChannelDisplayLimit] = useState<number>(80);
-  const [movieDisplayLimit, setMovieDisplayLimit] = useState<number>(48);
-  const [seriesDisplayLimit, setSeriesDisplayLimit] = useState<number>(48);
 
   useEffect(() => {
     setChannelDisplayLimit(80);
   }, [activeCategory, searchQuery]);
 
-  useEffect(() => {
-    setMovieDisplayLimit(48);
-  }, [searchQuery]);
-
-  useEffect(() => {
-    setSeriesDisplayLimit(48);
-  }, [searchQuery]);
-
   const visibleChannels = useMemo(() => {
     return channelsForSelectedCategory.slice(0, channelDisplayLimit);
   }, [channelsForSelectedCategory, channelDisplayLimit]);
-
-  const visibleMovies = useMemo(() => {
-    return displayedMovies.slice(0, movieDisplayLimit);
-  }, [displayedMovies, movieDisplayLimit]);
-
-  const visibleSeries = useMemo(() => {
-    return displayedSeries.slice(0, seriesDisplayLimit);
-  }, [displayedSeries, seriesDisplayLimit]);
 
   const categoryFolderItems = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -835,6 +917,75 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       setLastChannel(curChannel);
     }
   };
+
+  // ============================================================
+  // RENDER DE FILEIRA HORIZONTAL (reutilizado em filmes e séries)
+  // ============================================================
+  const renderRow = (
+    row: { title: string; emoji: string; items: VodItem[]; kind: 'top' | 'random' },
+    rowIndex: number,
+    isSeries: boolean
+  ) => (
+    <div key={`row-${isSeries ? 's' : 'm'}-${rowIndex}`} className="space-y-2">
+      <div className="flex items-center justify-between px-1">
+        <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+          <span className="text-base">{row.emoji}</span>
+          <span>{row.title}</span>
+          <span className="text-[10px] text-slate-500 font-mono font-normal normal-case">
+            ({row.items.length})
+          </span>
+        </h3>
+      </div>
+      <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-slate-800 snap-x snap-mandatory">
+        {row.items.map((item) => (
+          <div
+            key={`${rowIndex}-${item.id}`}
+            onClick={() =>
+              isSeries && isXtream ? handleOpenSeriesModal(item) : handlePlayVod(item)
+            }
+            className="group relative bg-[#131722] rounded-xl overflow-hidden border border-slate-800 hover:border-red-500/60 transition-all duration-300 shadow-md flex flex-col cursor-pointer active:scale-98 snap-start shrink-0 w-[130px] sm:w-[150px]"
+          >
+            <div className="relative aspect-[2/3] w-full bg-slate-900 overflow-hidden">
+              <img
+                src={item.posterUrl}
+                alt={item.title}
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                loading="lazy"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-[#131722] via-transparent to-black/30" />
+
+              <div className="absolute top-1.5 left-1.5 bg-black/75 backdrop-blur-sm px-1.5 py-0.5 rounded-md flex items-center gap-1 text-[10px] font-bold text-white border border-white/10 shadow-sm">
+                <Star className="w-2.5 h-2.5 fill-amber-400 text-amber-400" />
+                <span>{item.rating ? item.rating.toFixed(1) : '—'}</span>
+              </div>
+
+              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
+                <div className="w-10 h-10 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg shadow-red-600/50">
+                  <Play className="w-4 h-4 fill-current ml-0.5" />
+                </div>
+              </div>
+
+              {item.badge && (
+                <div className="absolute bottom-1.5 right-1.5 bg-red-600/90 text-white text-[8px] font-bold px-1 py-0.5 rounded uppercase">
+                  {item.badge}
+                </div>
+              )}
+            </div>
+
+            <div className="p-2 flex-1 flex flex-col justify-between">
+              <h4 className="text-[11px] sm:text-xs font-bold text-white line-clamp-2 group-hover:text-red-400 transition-colors leading-tight">
+                {item.title}
+              </h4>
+              <div className="flex items-center justify-between text-[9px] text-slate-400 mt-1">
+                <span className="truncate">{item.genre}</span>
+                <span>{item.year}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-[#090b10] text-slate-100 flex flex-col font-sans select-none relative overflow-x-hidden">
@@ -961,7 +1112,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </AnimatePresence>
       </header>
 
-      {/* PLAYER INLINE — fica no topo quando um canal ao vivo está tocando */}
+      {/* PLAYER INLINE — canal ao vivo */}
       <AnimatePresence>
         {nowPlaying && nowPlaying.type === 'live' && (
           <motion.div
@@ -1238,8 +1389,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       </AnimatePresence>
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-3 sm:px-4 py-4 pb-28 relative z-10">
+        {/* ============================================ */}
+        {/* TAB: FILMES — Hero + 8 fileiras (3 top + 5 random) */}
+        {/* ============================================ */}
         {activeTab === 'movies' && (
           <div className="space-y-6">
+            {/* Hero carousel */}
             {!searchQuery && FEATURED_MOVIES.length > 0 && (
               <div className="relative w-full overflow-hidden pt-2 pb-1">
                 <div className="relative flex items-center justify-center min-h-[340px] sm:min-h-[400px]">
@@ -1336,6 +1491,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
+            {/* Xtream VOD categories */}
             {isXtream && xtreamCategories.vod.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-slate-400 px-1">
@@ -1371,88 +1527,87 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
-            <div className="space-y-3">
-              <div className="flex items-center justify-between px-1">
-                <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                  <Film className="w-4 h-4 text-red-500" />
-                  <span>
-                    {selectedVodCat ? selectedVodCat.name : 'Catálogo de Filmes'} ({displayedMovies.length})
-                  </span>
-                </h3>
-                {loadingStreams && (
-                  <span className="text-xs text-red-400 flex items-center gap-1.5 animate-pulse">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Carregando...
-                  </span>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
-                {visibleMovies.map((movie) => (
-                  <div
-                    key={movie.id}
-                    onClick={() => handlePlayVod(movie)}
-                    className="group relative bg-[#131722] rounded-xl overflow-hidden border border-slate-800 hover:border-red-500/60 transition-all duration-300 shadow-md hover:shadow-red-950/30 flex flex-col cursor-pointer active:scale-98"
-                  >
-                    <div className="relative aspect-[2/3] w-full bg-slate-900 overflow-hidden">
-                      <img
-                        src={movie.posterUrl}
-                        alt={movie.title}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        loading="lazy"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-[#131722] via-transparent to-black/30" />
-
-                      <div className="absolute top-2 left-2 bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded-md flex items-center gap-1 text-[11px] font-bold text-white border border-white/10 shadow-sm">
-                        <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-                        <span>{movie.rating.toFixed(1)}</span>
-                      </div>
-
-                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
-                        <div className="w-11 h-11 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg shadow-red-600/50">
-                          <Play className="w-5 h-5 fill-current ml-0.5" />
-                        </div>
-                      </div>
-
-                      {movie.badge && (
-                        <div className="absolute bottom-2 right-2 bg-red-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded uppercase">
-                          {movie.badge}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="p-2.5 flex-1 flex flex-col justify-between">
-                      <h4 className="text-xs sm:text-sm font-bold text-white line-clamp-1 group-hover:text-red-400 transition-colors">
-                        {movie.title}
-                      </h4>
-                      <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
-                        <span>{movie.genre}</span>
-                        <span>{movie.year}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {visibleMovies.length < displayedMovies.length && (
-                <div className="p-4 bg-[#0e111a] rounded-xl border border-slate-800 flex items-center justify-between gap-3">
-                  <span className="text-xs text-slate-400">
-                    Exibindo <strong>{visibleMovies.length}</strong> de <strong>{displayedMovies.length}</strong> filmes
-                  </span>
-                  <button
-                    onClick={() => setMovieDisplayLimit((prev) => prev + 48)}
-                    className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs transition cursor-pointer"
-                  >
-                    Carregar Mais Filmes (+48)
-                  </button>
+            {/* SEARCH ATIVO: grid vertical */}
+            {searchQuery.trim() ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between px-1">
+                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                    <Film className="w-4 h-4 text-red-500" />
+                    <span>Resultados da Busca ({displayedMovies.length})</span>
+                  </h3>
                 </div>
-              )}
-            </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
+                  {displayedMovies.map((movie) => (
+                    <div
+                      key={movie.id}
+                      onClick={() => handlePlayVod(movie)}
+                      className="group relative bg-[#131722] rounded-xl overflow-hidden border border-slate-800 hover:border-red-500/60 transition-all duration-300 shadow-md hover:shadow-red-950/30 flex flex-col cursor-pointer active:scale-98"
+                    >
+                      <div className="relative aspect-[2/3] w-full bg-slate-900 overflow-hidden">
+                        <img
+                          src={movie.posterUrl}
+                          alt={movie.title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          loading="lazy"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-[#131722] via-transparent to-black/30" />
+                        <div className="absolute top-2 left-2 bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded-md flex items-center gap-1 text-[11px] font-bold text-white border border-white/10 shadow-sm">
+                          <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                          <span>{movie.rating ? movie.rating.toFixed(1) : '—'}</span>
+                        </div>
+                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
+                          <div className="w-11 h-11 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg shadow-red-600/50">
+                            <Play className="w-5 h-5 fill-current ml-0.5" />
+                          </div>
+                        </div>
+                        {movie.badge && (
+                          <div className="absolute bottom-2 right-2 bg-red-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded uppercase">
+                            {movie.badge}
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2.5 flex-1 flex flex-col justify-between">
+                        <h4 className="text-xs sm:text-sm font-bold text-white line-clamp-1 group-hover:text-red-400 transition-colors">
+                          {movie.title}
+                        </h4>
+                        <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
+                          <span>{movie.genre}</span>
+                          <span>{movie.year}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              // NAVEGAÇÃO NORMAL: 8 fileiras horizontais (3 top + 5 random)
+              <div className="space-y-5">
+                {loadingStreams && (
+                  <div className="py-12 text-center bg-[#0e111a] rounded-2xl border border-slate-800">
+                    <Loader2 className="w-8 h-8 text-red-500 animate-spin mx-auto mb-3" />
+                    <p className="text-sm text-slate-200 font-bold">Carregando filmes...</p>
+                  </div>
+                )}
+
+                {!loadingStreams && movieRows.length === 0 && (
+                  <div className="py-12 text-center bg-[#0e111a] rounded-2xl border border-slate-800">
+                    <Film className="w-10 h-10 text-slate-600 mx-auto mb-2" />
+                    <p className="text-sm text-slate-400 font-medium">Nenhum filme disponível nesta categoria.</p>
+                  </div>
+                )}
+
+                {!loadingStreams && movieRows.map((row, idx) => renderRow(row, idx, false))}
+              </div>
+            )}
           </div>
         )}
 
+        {/* ============================================ */}
+        {/* TAB: SÉRIES — 8 fileiras (3 top + 5 random) */}
+        {/* ============================================ */}
         {activeTab === 'series' && (
           <div className="space-y-6">
+            {/* Xtream series categories */}
             {isXtream && xtreamCategories.series.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-slate-400 px-1">
@@ -1488,84 +1643,84 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
-            <div className="flex items-center justify-between px-1">
-              <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                <PlaySquare className="w-4 h-4 text-red-500" />
-                <span>
-                  {selectedSeriesCat ? selectedSeriesCat.name : 'Séries & Novelas'} ({displayedSeries.length})
-                </span>
-              </h3>
-              {loadingStreams && (
-                <span className="text-xs text-red-400 flex items-center gap-1.5 animate-pulse">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Carregando...
-                </span>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
-              {visibleSeries.map((series) => (
-                <div
-                  key={series.id}
-                  onClick={() => (isXtream ? handleOpenSeriesModal(series) : handlePlayVod(series))}
-                  className="group relative bg-[#131722] rounded-xl overflow-hidden border border-slate-800 hover:border-red-500/60 transition-all duration-300 shadow-md flex flex-col cursor-pointer active:scale-98"
-                >
-                  <div className="relative aspect-[2/3] w-full bg-slate-900 overflow-hidden">
-                    <img
-                      src={series.posterUrl}
-                      alt={series.title}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      loading="lazy"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#131722] via-transparent to-black/30" />
-
-                    <div className="absolute top-2 left-2 bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded-md flex items-center gap-1 text-[11px] font-bold text-white border border-white/10 shadow-sm">
-                      <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-                      <span>{series.rating.toFixed(1)}</span>
-                    </div>
-
-                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
-                      <div className="w-11 h-11 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg shadow-red-600/50">
-                        <Play className="w-5 h-5 fill-current ml-0.5" />
-                      </div>
-                    </div>
-
-                    {series.badge && (
-                      <div className="absolute bottom-2 right-2 bg-red-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded uppercase">
-                        {series.badge}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="p-2.5 flex-1 flex flex-col justify-between">
-                    <h4 className="text-xs sm:text-sm font-bold text-white line-clamp-1 group-hover:text-red-400 transition-colors">
-                      {series.title}
-                    </h4>
-                    <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
-                      <span>{series.genre}</span>
-                      <span>{series.duration}</span>
-                    </div>
-                  </div>
+            {/* SEARCH ATIVO: grid vertical */}
+            {searchQuery.trim() ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between px-1">
+                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                    <PlaySquare className="w-4 h-4 text-red-500" />
+                    <span>Resultados da Busca ({displayedSeries.length})</span>
+                  </h3>
                 </div>
-              ))}
-            </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
+                  {displayedSeries.map((series) => (
+                    <div
+                      key={series.id}
+                      onClick={() => (isXtream ? handleOpenSeriesModal(series) : handlePlayVod(series))}
+                      className="group relative bg-[#131722] rounded-xl overflow-hidden border border-slate-800 hover:border-red-500/60 transition-all duration-300 shadow-md flex flex-col cursor-pointer active:scale-98"
+                    >
+                      <div className="relative aspect-[2/3] w-full bg-slate-900 overflow-hidden">
+                        <img
+                          src={series.posterUrl}
+                          alt={series.title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          loading="lazy"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-[#131722] via-transparent to-black/30" />
+                        <div className="absolute top-2 left-2 bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded-md flex items-center gap-1 text-[11px] font-bold text-white border border-white/10 shadow-sm">
+                          <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                          <span>{series.rating ? series.rating.toFixed(1) : '—'}</span>
+                        </div>
+                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
+                          <div className="w-11 h-11 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg shadow-red-600/50">
+                            <Play className="w-5 h-5 fill-current ml-0.5" />
+                          </div>
+                        </div>
+                        {series.badge && (
+                          <div className="absolute bottom-2 right-2 bg-red-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded uppercase">
+                            {series.badge}
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2.5 flex-1 flex flex-col justify-between">
+                        <h4 className="text-xs sm:text-sm font-bold text-white line-clamp-1 group-hover:text-red-400 transition-colors">
+                          {series.title}
+                        </h4>
+                        <div className="flex items-center justify-between text-[10px] text-slate-400 mt-1">
+                          <span>{series.genre}</span>
+                          <span>{series.duration}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              // NAVEGAÇÃO NORMAL: 8 fileiras horizontais (3 top + 5 random)
+              <div className="space-y-5">
+                {loadingStreams && (
+                  <div className="py-12 text-center bg-[#0e111a] rounded-2xl border border-slate-800">
+                    <Loader2 className="w-8 h-8 text-red-500 animate-spin mx-auto mb-3" />
+                    <p className="text-sm text-slate-200 font-bold">Carregando séries...</p>
+                  </div>
+                )}
 
-            {visibleSeries.length < displayedSeries.length && (
-              <div className="p-4 bg-[#0e111a] rounded-xl border border-slate-800 flex items-center justify-between gap-3">
-                <span className="text-xs text-slate-400">
-                  Exibindo <strong>{visibleSeries.length}</strong> de <strong>{displayedSeries.length}</strong> séries
-                </span>
-                <button
-                  onClick={() => setSeriesDisplayLimit((prev) => prev + 48)}
-                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs transition cursor-pointer"
-                >
-                  Carregar Mais Séries (+48)
-                </button>
+                {!loadingStreams && seriesRows.length === 0 && (
+                  <div className="py-12 text-center bg-[#0e111a] rounded-2xl border border-slate-800">
+                    <PlaySquare className="w-10 h-10 text-slate-600 mx-auto mb-2" />
+                    <p className="text-sm text-slate-400 font-medium">Nenhuma série disponível nesta categoria.</p>
+                  </div>
+                )}
+
+                {!loadingStreams && seriesRows.map((row, idx) => renderRow(row, idx, true))}
               </div>
             )}
           </div>
         )}
 
+        {/* ============================================ */}
+        {/* TAB: TV AO VIVO — sem alterações */}
+        {/* ============================================ */}
         {activeTab === 'live' && (
           <div>
             {activeCategory === null && (
@@ -1935,7 +2090,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
       </nav>
 
-      {/* MODAL DO PLAYER — só pra VOD (filmes/séries). Ao vivo usa o player inline acima */}
+      {/* MODAL DO PLAYER — só VOD */}
       <AnimatePresence>
         {nowPlaying && nowPlaying.type === 'vod' && (
           <motion.div
