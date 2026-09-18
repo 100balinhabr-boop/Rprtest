@@ -82,6 +82,31 @@ function buildHeroSlides(items: VodItem[]): VodItem[] {
   return [...top3, ...random5].slice(0, 8);
 }
 
+// Detecta se a URL é HLS (m3u8)
+function isHlsUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return (
+    lower.includes('.m3u8') ||
+    lower.includes('m3u8') ||
+    lower.includes('/hls/') ||
+    lower.includes('format=m3u8')
+  );
+}
+
+// Detecta se a URL é arquivo direto (mp4/mkv/etc)
+function isDirectVideoUrl(url: string): boolean {
+  const lower = url.toLowerCase().split('?')[0];
+  return (
+    lower.endsWith('.mp4') ||
+    lower.endsWith('.mkv') ||
+    lower.endsWith('.avi') ||
+    lower.endsWith('.mov') ||
+    lower.endsWith('.webm') ||
+    lower.endsWith('.ts') ||
+    lower.endsWith('.m4v')
+  );
+}
+
 export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   channels,
   categories,
@@ -449,6 +474,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
   };
 
+  // ============================================================
+  // PLAYER PRINCIPAL — detecta HLS vs MP4/MKV e escolhe o motor
+  // ============================================================
   useEffect(() => {
     if (!nowPlaying || !videoRef.current) return;
 
@@ -466,11 +494,16 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     const video = videoRef.current;
     let streamUrl = nowPlaying.streamUrl;
 
+    // Se o site é HTTPS e o stream é HTTP, passa pelo proxy pra evitar Mixed Content
     if (typeof window !== 'undefined' && window.location.protocol === 'https:' && streamUrl.startsWith('http://')) {
       streamUrl = `/api/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
     }
 
-    if (Hls.isSupported() && (streamUrl.includes('.m3u8') || streamUrl.includes('hls') || streamUrl.startsWith('http') || streamUrl.includes('/api/proxy-stream'))) {
+    const isHls = isHlsUrl(streamUrl);
+    const isDirect = isDirectVideoUrl(streamUrl);
+
+    // ---------- CASO 1: HLS (m3u8) → usa Hls.js ----------
+    if (Hls.isSupported() && isHls && !isDirect) {
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
@@ -552,23 +585,52 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       });
 
       hlsRef.current = hls;
-    } else if (video.canPlayType('application/vnd.apple.mpegurl') || video.canPlayType('video/mp4')) {
+      return () => {
+        if (hlsRef.current) {
+          hlsRef.current.destroy();
+          hlsRef.current = null;
+        }
+      };
+    }
+
+    // ---------- CASO 2: MP4 / MKV / outros → video nativo ----------
+    // Limpa qualquer HLS anterior e usa o player nativo do navegador
+    const onLoaded = () => {
+      setIsBuffering(false);
+      video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    };
+    const onErr = () => {
+      setIsBuffering(false);
+      setPlayerError('Não foi possível reproduzir este arquivo. Formato ou codec incompatível.');
+    };
+    const onWaiting = () => setIsBuffering(true);
+    const onPlaying = () => setIsBuffering(false);
+
+    video.addEventListener('loadedmetadata', onLoaded);
+    video.addEventListener('error', onErr);
+    video.addEventListener('waiting', onWaiting);
+    video.addEventListener('playing', onPlaying);
+    video.addEventListener('canplay', onLoaded);
+
+    // Se a URL do proxy foi usada, mantém; senão usa a original
+    try {
       video.src = streamUrl;
-      video.addEventListener('loadedmetadata', () => {
-        setIsBuffering(false);
-        video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      video.load();
+      // Tenta dar play (alguns navegadores precisam de interação)
+      video.play().then(() => setIsPlaying(true)).catch(() => {
+        setIsPlaying(false);
       });
-      video.addEventListener('error', () => {
-        setIsBuffering(false);
-        setPlayerError('Falha ao reproduzir o fluxo nativo.');
-      });
+    } catch {
+      setIsBuffering(false);
+      setPlayerError('Erro ao definir a fonte do vídeo.');
     }
 
     return () => {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
+      video.removeEventListener('loadedmetadata', onLoaded);
+      video.removeEventListener('error', onErr);
+      video.removeEventListener('waiting', onWaiting);
+      video.removeEventListener('playing', onPlaying);
+      video.removeEventListener('canplay', onLoaded);
     };
   }, [nowPlaying]);
 
@@ -1113,7 +1175,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </AnimatePresence>
       </header>
 
-      {/* PLAYER INLINE ÚNICO — serve AO VIVO e VOD */}
+      {/* PLAYER INLINE ÚNICO — AO VIVO + VOD */}
       <AnimatePresence>
         {nowPlaying && (
           <motion.div
@@ -1148,7 +1210,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 }}
               />
 
-              {/* Top bar */}
               <AnimatePresence>
                 {controlsVisible && (
                   <motion.div
@@ -1226,7 +1287,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               )}
 
-              {/* Bottom controls */}
               <AnimatePresence>
                 {controlsVisible && (
                   <motion.div
@@ -1335,7 +1395,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                           />
                         )}
 
-                        {/* Zap — apenas para AO VIVO */}
                         {nowPlaying.type === 'live' && lastChannel && (
                           <button
                             onClick={handleZapLast}
@@ -1397,7 +1456,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       </AnimatePresence>
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-3 sm:px-4 py-4 pb-28 relative z-10">
-        {/* TAB: FILMES */}
         {activeTab === 'movies' && (
           <div className="space-y-6">
             {!searchQuery && renderHero(movieHeroSlides, false)}
@@ -1522,7 +1580,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
-        {/* TAB: SÉRIES */}
         {activeTab === 'series' && (
           <div className="space-y-6">
             {!searchQuery && renderHero(seriesHeroSlides, true)}
@@ -1647,7 +1704,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
-        {/* TAB: TV AO VIVO */}
         {activeTab === 'live' && (
           <div>
             {activeCategory === null && (
