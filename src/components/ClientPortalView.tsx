@@ -37,7 +37,12 @@ import {
   Folder,
   FolderOpen,
   Loader2,
-  PlayCircle
+  PlayCircle,
+  Sun,
+  PictureInPicture2,
+  Gauge,
+  RefreshCw,
+  SkipBack
 } from 'lucide-react';
 
 interface ClientPortalViewProps {
@@ -63,21 +68,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   onSwitchToAdmin,
   isAdminPreview = false,
 }) => {
-  // Navigation tabs
   const [activeTab, setActiveTab] = useState<ClientTab>('live');
-
-  // Search
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
-
-  // Carousel in Movies tab
   const [activeSlide, setActiveSlide] = useState<number>(0);
-
-  // TV ao Vivo navigation states
-  // null = category folder list view (Screenshot 3), string = selected category channels view (Screenshot 2)
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
 
-  // Player state
   const [nowPlaying, setNowPlaying] = useState<{
     title: string;
     streamUrl: string;
@@ -93,7 +89,20 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
 
-  // Recently watched channels/movies
+  // Novos states — features do player
+  const [lastChannel, setLastChannel] = useState<Channel | null>(null);
+  const [controlsVisible, setControlsVisible] = useState<boolean>(true);
+  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const [reconnectAttempt, setReconnectAttempt] = useState<number>(0);
+  const [brightness, setBrightness] = useState<number>(1);
+  const [showBrightness, setShowBrightness] = useState<boolean>(false);
+  const [showQualityMenu, setShowQualityMenu] = useState<boolean>(false);
+  const [hlsLevels, setHlsLevels] = useState<Array<{ index: number; name: string }>>([]);
+  const [currentLevel, setCurrentLevel] = useState<number>(-1);
+  const [isPipActive, setIsPipActive] = useState<boolean>(false);
+  const [volume, setVolume] = useState<number>(1);
+  const [usedFormat, setUsedFormat] = useState<'m3u8' | 'ts'>('m3u8');
+
   const [recentlyWatched, setRecentlyWatched] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem(`iptv_recent_${currentUser?.id || 'guest'}`);
@@ -103,9 +112,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
   });
 
-  // --------------------------------------------------------------------------
-  // Smarters/TiviMate Smart On-Demand Engine (Carregamento Sob Demanda)
-  // --------------------------------------------------------------------------
   const isXtream = useMemo(() => {
     const pUrl = currentUser?.playlistUrl || '';
     return pUrl.includes('username=') && pUrl.includes('password=');
@@ -122,11 +128,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [selectedVodCat, setSelectedVodCat] = useState<{ id: string; name: string } | null>(null);
   const [selectedSeriesCat, setSelectedSeriesCat] = useState<{ id: string; name: string } | null>(null);
 
-  // Cache em memória de itens por categoria: chave = `type_categoryId`
   const [xtreamStreamsCache, setXtreamStreamsCache] = useState<Record<string, any[]>>({});
   const [loadingStreams, setLoadingStreams] = useState<boolean>(false);
 
-  // Modal de Detalhes de Séries (Temporadas & Episódios sob demanda)
   const [seriesModal, setSeriesModal] = useState<{
     isOpen: boolean;
     series: any | null;
@@ -144,10 +148,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     loading: false,
   });
 
-  // Buscar categorias Xtream sob demanda ao alternar abas
   useEffect(() => {
     if (!isXtream || !currentUser?.playlistUrl) return;
-
     const targetType = activeTab === 'movies' ? 'vod' : activeTab === 'series' ? 'series' : 'live';
     if (xtreamCategories[targetType].length > 0) return;
 
@@ -164,8 +166,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         if (!isMounted) return;
         if (data.success && Array.isArray(data.categories)) {
           setXtreamCategories((prev) => ({ ...prev, [targetType]: data.categories }));
-
-          // Auto-selecionar primeira categoria para Filmes e Séries para já exibir itens
           if (targetType === 'vod' && data.categories.length > 0 && !selectedVodCat) {
             setSelectedVodCat(data.categories[0]);
             loadStreamsForCategory('vod', data.categories[0].id);
@@ -185,10 +185,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     };
   }, [activeTab, isXtream, currentUser?.playlistUrl]);
 
-  // Carregar streams de uma categoria específica sob demanda (Zero travamento)
   const loadStreamsForCategory = async (type: 'live' | 'vod' | 'series', catId: string) => {
     const cacheKey = `${type}_${catId}`;
-    if (xtreamStreamsCache[cacheKey]) return; // Já carregado no cache da sessão
+    if (xtreamStreamsCache[cacheKey]) return;
 
     setLoadingStreams(true);
     try {
@@ -229,7 +228,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     loadStreamsForCategory('series', cat.id);
   };
 
-  // Abrir modal de episódios da série
   const handleOpenSeriesModal = async (seriesItem: any) => {
     const sId = seriesItem.seriesId || String(seriesItem.id).replace('series_', '');
     setSeriesModal({
@@ -312,14 +310,14 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     setSeriesModal((prev) => ({ ...prev, isOpen: false }));
   };
 
-  // Drawer menu toggle
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
+  const controlsTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Auto-slide carousel in Movies tab
   useEffect(() => {
     if (activeTab !== 'movies') return;
     const interval = setInterval(() => {
@@ -328,12 +326,116 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return () => clearInterval(interval);
   }, [activeTab]);
 
+  // Auto-hide controls após 3.5s
+  const scheduleHideControls = () => {
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => {
+      if (isPlaying) setControlsVisible(false);
+    }, 3500);
+  };
+
+  const showControlsTemporarily = () => {
+    setControlsVisible(true);
+    scheduleHideControls();
+  };
+
+  useEffect(() => {
+    if (isPlaying) {
+      scheduleHideControls();
+    } else {
+      setControlsVisible(true);
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    }
+    return () => {
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, [isPlaying]);
+
+  // Fullscreen listener
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  // PiP listener
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onEnter = () => setIsPipActive(true);
+    const onLeave = () => setIsPipActive(false);
+    video.addEventListener('enterpictureinpicture', onEnter);
+    video.addEventListener('leavepictureinpicture', onLeave);
+    return () => {
+      video.removeEventListener('enterpictureinpicture', onEnter);
+      video.removeEventListener('leavepictureinpicture', onLeave);
+    };
+  }, [videoRef.current]);
+
+  // Aplica brilho
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.style.filter = `brightness(${brightness})`;
+    }
+  }, [brightness]);
+
+  // Aplica volume
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = volume;
+      videoRef.current.muted = isMuted;
+    }
+  }, [volume, isMuted]);
+
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    };
+  }, []);
+
+  // Fallback de formato
+  const tryFormatFallback = () => {
+    if (!nowPlaying) return;
+    if (usedFormat === 'm3u8' && nowPlaying.streamUrl.includes('.m3u8')) {
+      setUsedFormat('ts');
+      setReconnectAttempt(0);
+      setPlayerError('Tentando formato alternativo (.ts)...');
+      setTimeout(() => {
+        const tsUrl = nowPlaying.streamUrl.replace('.m3u8', '.ts');
+        if (videoRef.current) {
+          if (hlsRef.current) {
+            hlsRef.current.destroy();
+            hlsRef.current = null;
+          }
+          videoRef.current.src = tsUrl;
+          videoRef.current.play().then(() => {
+            setIsPlaying(true);
+            setPlayerError(null);
+            setIsReconnecting(false);
+          }).catch(() => {
+            setPlayerError('Formato alternativo também falhou.');
+          });
+        }
+      }, 800);
+    } else {
+      setPlayerError('Canal indisponível. Tente novamente mais tarde.');
+    }
+  };
+
   // Video playback controller
   useEffect(() => {
     if (!nowPlaying || !videoRef.current) return;
 
     setPlayerError(null);
     setIsBuffering(true);
+    setIsReconnecting(false);
+    setReconnectAttempt(0);
+    setUsedFormat('m3u8');
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -343,7 +445,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     const video = videoRef.current;
     let streamUrl = nowPlaying.streamUrl;
 
-    // Mixed Content CORS Proxy fallback
     if (typeof window !== 'undefined' && window.location.protocol === 'https:' && streamUrl.startsWith('http://')) {
       streamUrl = `/api/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
     }
@@ -353,14 +454,40 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         enableWorker: true,
         lowLatencyMode: true,
         backBufferLength: 30,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        maxBufferSize: 60 * 1000 * 1000,
+        maxBufferHole: 0.5,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 6,
+        highBufferWatchdogPeriod: 2,
+        manifestLoadingTimeOut: 20000,
+        manifestLoadingMaxRetry: 3,
+        manifestLoadingRetryDelay: 1500,
+        levelLoadingTimeOut: 20000,
+        levelLoadingMaxRetry: 4,
+        fragLoadingTimeOut: 30000,
+        fragLoadingMaxRetry: 6,
+        startLevel: -1,
+        capLevelToPlayerSize: true,
       });
 
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         setIsBuffering(false);
+        const levels = (data.levels || []).map((lvl: any, idx: number) => ({
+          index: idx,
+          name: lvl.height ? `${lvl.height}p` : `${Math.round((lvl.bitrate || 0) / 1000)}kbps`,
+        }));
+        setHlsLevels(levels);
+        setCurrentLevel(hls.currentLevel);
         video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      });
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
+        setCurrentLevel(data.level);
       });
 
       hls.on(Hls.Events.BUFFER_APPENDING, () => {
@@ -372,22 +499,34 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       });
 
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) {
-          setIsBuffering(false);
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              setPlayerError('Tentando reconectar ao stream...');
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              setPlayerError('Ajustando codecs de reprodução...');
-              hls.recoverMediaError();
-              break;
-            default:
-              setPlayerError('Stream indisponível ou bloqueado pela operadora.');
-              hls.destroy();
-              break;
+        if (!data.fatal) return;
+        setIsBuffering(false);
+
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          const attempt = reconnectAttempt + 1;
+          if (attempt <= 3) {
+            setIsReconnecting(true);
+            setReconnectAttempt(attempt);
+            setPlayerError(`Conexão caiu. Reconectando... (${attempt}/3)`);
+            hls.stopLoad();
+            reconnectTimerRef.current = setTimeout(() => {
+              try {
+                hls.startLoad();
+                setIsReconnecting(false);
+                setPlayerError(null);
+              } catch {
+                tryFormatFallback();
+              }
+            }, 2000);
+          } else {
+            tryFormatFallback();
           }
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          setPlayerError('Ajustando codecs de reprodução...');
+          hls.recoverMediaError();
+        } else {
+          setPlayerError('Stream indisponível ou bloqueado pela operadora.');
+          hls.destroy();
         }
       });
 
@@ -412,8 +551,10 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     };
   }, [nowPlaying]);
 
-  // Handle Play Channel
   const handlePlayChannel = (channel: Channel) => {
+    if (nowPlaying?.item && (nowPlaying.item as any).id !== channel.id && nowPlaying.type === 'live') {
+      setLastChannel(nowPlaying.item as Channel);
+    }
     setNowPlaying({
       title: channel.name,
       streamUrl: channel.streamUrl,
@@ -423,7 +564,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       item: channel,
     });
 
-    // Save to recently watched
     setRecentlyWatched((prev) => {
       const filtered = prev.filter((id) => id !== channel.id);
       const updated = [channel.id, ...filtered].slice(0, 20);
@@ -436,7 +576,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     });
   };
 
-  // Handle Play VOD Item
   const handlePlayVod = (item: VodItem) => {
     setNowPlaying({
       title: item.title,
@@ -448,7 +587,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     });
   };
 
-  // Separate Channels into Categories and counts
   const favoriteChannels = useMemo(() => {
     return channels.filter((c) => c.isFavorite);
   }, [channels]);
@@ -458,7 +596,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return recentlyWatched.map((id) => map.get(id)).filter(Boolean) as Channel[];
   }, [channels, recentlyWatched]);
 
-  // Extract M3U movies and series if present in playlist
   const { playlistMovies, playlistSeries, liveChannelsList } = useMemo(() => {
     const movies: Channel[] = [];
     const series: Channel[] = [];
@@ -466,8 +603,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
     for (const ch of channels) {
       const group = (ch.groupTitle || '').toUpperCase();
-      const name = ch.name.toUpperCase();
-
       if (group.includes('FILME') || group.includes('MOVIE') || group.includes('CINEMA') || group.includes('VOD') || ch.streamUrl.endsWith('.mp4') || ch.streamUrl.endsWith('.mkv')) {
         movies.push(ch);
       } else if (group.includes('SERIE') || group.includes('TEMPORADA') || group.includes('EPISODIO') || group.includes('NOVELA')) {
@@ -484,7 +619,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     };
   }, [channels]);
 
-  // Combined VOD movie items
   const allMovies = useMemo<VodItem[]>(() => {
     const list = [...SAMPLE_MOVIES];
     if (playlistMovies.length > 0) {
@@ -507,7 +641,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return list;
   }, [playlistMovies]);
 
-  // Filtered movies by search query or current Xtream category
   const displayedMovies = useMemo(() => {
     if (isXtream && selectedVodCat) {
       const items = (xtreamStreamsCache[`vod_${selectedVodCat.id}`] || []) as VodItem[];
@@ -521,7 +654,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return allMovies.filter((m) => m.title.toLowerCase().includes(query) || m.genre.toLowerCase().includes(query));
   }, [isXtream, selectedVodCat, xtreamStreamsCache, allMovies, searchQuery]);
 
-  // Combined VOD series items
   const allSeries = useMemo<VodItem[]>(() => {
     const list = [...SAMPLE_SERIES];
     if (playlistSeries.length > 0) {
@@ -545,7 +677,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return list;
   }, [playlistSeries]);
 
-  // Filtered series by search query or current Xtream category
   const displayedSeries = useMemo(() => {
     if (isXtream && selectedSeriesCat) {
       const items = (xtreamStreamsCache[`series_${selectedSeriesCat.id}`] || []) as VodItem[];
@@ -559,7 +690,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return allSeries.filter((s) => s.title.toLowerCase().includes(query) || s.genre.toLowerCase().includes(query));
   }, [isXtream, selectedSeriesCat, xtreamStreamsCache, allSeries, searchQuery]);
 
-  // Channels to display in TV ao Vivo
   const channelsForSelectedCategory = useMemo(() => {
     if (isXtream && selectedLiveCat && activeCategory === selectedLiveCat.name) {
       const items = (xtreamStreamsCache[`live_${selectedLiveCat.id}`] || []) as Channel[];
@@ -588,7 +718,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return list;
   }, [isXtream, selectedLiveCat, activeCategory, xtreamStreamsCache, liveChannelsList, favoriteChannels, recentChannels, searchQuery]);
 
-  // Pagination for high-performance rendering of huge playlists (10k - 50k+ items)
   const [channelDisplayLimit, setChannelDisplayLimit] = useState<number>(80);
   const [movieDisplayLimit, setMovieDisplayLimit] = useState<number>(48);
   const [seriesDisplayLimit, setSeriesDisplayLimit] = useState<number>(48);
@@ -617,18 +746,15 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return displayedSeries.slice(0, seriesDisplayLimit);
   }, [displayedSeries, seriesDisplayLimit]);
 
-  // Group counts for category list
   const categoryFolderItems = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const ch of liveChannelsList) {
       const grp = ch.groupTitle || 'CANAIS | Variados';
       counts[grp] = (counts[grp] || 0) + 1;
     }
-
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [liveChannelsList]);
 
-  // Format expiration date and days remaining
   const expirationInfo = useMemo(() => {
     if (!currentUser?.expirationDate) {
       return { status: 'Ativo Ilimitado', daysLeft: 999, isExpiringSoon: false, isExpired: false, label: 'Vitalício' };
@@ -657,26 +783,71 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     };
   }, [currentUser?.expirationDate]);
 
-  // Toggle fullscreen
   const toggleFullscreen = () => {
     if (!playerContainerRef.current) return;
     if (!document.fullscreenElement) {
-      playerContainerRef.current.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+      playerContainerRef.current.requestFullscreen()
+        .then(() => {
+          setIsFullscreen(true);
+          if (screen.orientation && (screen.orientation as any).lock) {
+            (screen.orientation as any).lock('landscape').catch(() => {});
+          }
+        })
+        .catch(() => {});
     } else {
       document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
     }
   };
 
+  const togglePiP = async () => {
+    if (!videoRef.current) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if ((videoRef.current as any).requestPictureInPicture) {
+        await (videoRef.current as any).requestPictureInPicture();
+      } else {
+        setPlayerError('PiP não suportado neste navegador.');
+        setTimeout(() => setPlayerError(null), 3000);
+      }
+    } catch {
+      setPlayerError('Não foi possível ativar o PiP agora.');
+      setTimeout(() => setPlayerError(null), 3000);
+    }
+  };
+
+  const changeQuality = (levelIndex: number) => {
+    if (hlsRef.current) {
+      hlsRef.current.currentLevel = levelIndex;
+      setCurrentLevel(levelIndex);
+      setShowQualityMenu(false);
+    }
+  };
+
+  const handleZapLast = () => {
+    if (!lastChannel || !nowPlaying) return;
+    const curChannel = nowPlaying.item as Channel | undefined;
+    setNowPlaying({
+      title: lastChannel.name,
+      streamUrl: lastChannel.streamUrl,
+      category: lastChannel.groupTitle || 'Geral',
+      logoUrl: lastChannel.logoUrl,
+      type: 'live',
+      item: lastChannel,
+    });
+    if (curChannel && curChannel.streamUrl) {
+      setLastChannel(curChannel);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#090b10] text-slate-100 flex flex-col font-sans select-none relative overflow-x-hidden">
-      {/* Background ambient texture / deep subtle glow */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[700px] h-[500px] bg-red-950/20 rounded-full blur-[140px]" />
         <div className="absolute bottom-0 right-0 w-[500px] h-[400px] bg-red-900/10 rounded-full blur-[160px]" />
         <div className="absolute inset-0 bg-[radial-gradient(#1e2433_1px,transparent_1px)] [background-size:24px_24px] opacity-25" />
       </div>
 
-      {/* Admin Preview Banner (if admin is testing the client view) */}
       {isAdminPreview && (
         <div className="relative z-50 bg-gradient-to-r from-amber-600 via-amber-700 to-amber-600 text-white px-4 py-2 text-xs flex items-center justify-between shadow-md">
           <div className="flex items-center gap-2 font-medium">
@@ -697,10 +868,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
       )}
 
-      {/* Top Header matching screenshots */}
       <header className="sticky top-0 z-40 bg-[#0c0e14]/90 backdrop-blur-md px-4 py-3 border-b border-slate-800/60 shadow-lg">
         <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
-          {/* Left Action: Hamburger / Drawer or Back Button when inside a TV Category */}
           {activeTab === 'live' && activeCategory !== null ? (
             <button
               onClick={() => {
@@ -722,7 +891,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             </button>
           )}
 
-          {/* Center Title */}
           <div className="flex-1 text-center">
             <h1 className="text-lg sm:text-xl font-bold tracking-wide text-white drop-shadow-sm truncate px-2">
               {activeTab === 'movies' && 'Filmes'}
@@ -732,13 +900,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             </h1>
           </div>
 
-          {/* Right Action: Switch to Studio / Admin and Search toggle */}
           <div className="flex items-center gap-2">
             {onSwitchToAdmin && (
               <button
                 onClick={onSwitchToAdmin}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-semibold transition active:scale-95 cursor-pointer shadow-sm"
-                title="Voltar ao Painel Studio / Admin Master (Códigos Android & Arquitetura)"
+                title="Voltar ao Painel Studio / Admin Master"
               >
                 <Code2 className="w-3.5 h-3.5 text-blue-400" />
                 <span className="hidden sm:inline">Studio / Admin</span>
@@ -760,7 +927,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         </div>
 
-        {/* Expandable Search Input Bar */}
         <AnimatePresence>
           {isSearchOpen && (
             <motion.div
@@ -799,13 +965,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </AnimatePresence>
       </header>
 
-      {/* Main Content Area (padding-bottom reserved for fixed bottom navigation bar) */}
       <main className="flex-1 max-w-4xl w-full mx-auto px-3 sm:px-4 py-4 pb-28 relative z-10">
-        
-        {/* TAB 1: FILMES (matching Screenshot 1) */}
         {activeTab === 'movies' && (
           <div className="space-y-6">
-            {/* Featured Carousel Hero */}
             {!searchQuery && FEATURED_MOVIES.length > 0 && (
               <div className="relative w-full overflow-hidden pt-2 pb-1">
                 <div className="relative flex items-center justify-center min-h-[340px] sm:min-h-[400px]">
@@ -831,7 +993,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             : 'z-10 w-[65%] sm:w-[50%] h-[270px] sm:h-[330px] translate-x-[45%] scale-90 opacity-40 border-slate-700/50'
                         }`}
                       >
-                        {/* Movie Poster Artwork */}
                         <img
                           src={movie.posterUrl}
                           alt={movie.title}
@@ -839,9 +1000,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                           loading="lazy"
                         />
 
-                        {/* Dark Gradient Overlay */}
                         <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent flex flex-col justify-between p-4 sm:p-5">
-                          {/* Top row: Rank badge matching screenshot */}
                           <div className="flex items-start justify-between">
                             <div className="bg-red-700 text-white font-black text-sm sm:text-base px-2.5 py-1 rounded-md shadow-md">
                               {movie.rank || idx + 1}
@@ -853,7 +1012,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             )}
                           </div>
 
-                          {/* Bottom info: Title, subtitle, 5 gold stars */}
                           {isCurrent && (
                             <div className="space-y-1.5 text-center">
                               <p className="text-[10px] sm:text-xs text-amber-400 font-semibold tracking-widest uppercase drop-shadow">
@@ -866,7 +1024,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                                 {movie.originalTitle || movie.synopsis}
                               </p>
 
-                              {/* 5 gold stars */}
                               <div className="flex items-center justify-center gap-1 pt-1">
                                 {[...Array(5)].map((_, s) => (
                                   <Star key={s} className="w-4 h-4 fill-amber-400 text-amber-400" />
@@ -893,7 +1050,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   })}
                 </div>
 
-                {/* Carousel Pagination Dots */}
                 <div className="flex items-center justify-center gap-1.5 mt-3">
                   {FEATURED_MOVIES.map((_, dotIdx) => (
                     <button
@@ -908,7 +1064,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
-            {/* Xtream VOD Category Pills (Sob Demanda TiviMate/Smarters) */}
             {isXtream && xtreamCategories.vod.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-slate-400 px-1">
@@ -944,7 +1099,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
-            {/* Movie Catalog Grid matching screenshot */}
             <div className="space-y-3">
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
@@ -968,7 +1122,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     onClick={() => handlePlayVod(movie)}
                     className="group relative bg-[#131722] rounded-xl overflow-hidden border border-slate-800 hover:border-red-500/60 transition-all duration-300 shadow-md hover:shadow-red-950/30 flex flex-col cursor-pointer active:scale-98"
                   >
-                    {/* Poster with Star Rating Badge */}
                     <div className="relative aspect-[2/3] w-full bg-slate-900 overflow-hidden">
                       <img
                         src={movie.posterUrl}
@@ -978,13 +1131,11 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-[#131722] via-transparent to-black/30" />
 
-                      {/* Star Rating badge top left */}
                       <div className="absolute top-2 left-2 bg-black/75 backdrop-blur-sm px-2 py-0.5 rounded-md flex items-center gap-1 text-[11px] font-bold text-white border border-white/10 shadow-sm">
                         <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                         <span>{movie.rating.toFixed(1)}</span>
                       </div>
 
-                      {/* Play overlay hover button */}
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
                         <div className="w-11 h-11 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg shadow-red-600/50">
                           <Play className="w-5 h-5 fill-current ml-0.5" />
@@ -998,7 +1149,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       )}
                     </div>
 
-                    {/* Movie Title & Info */}
                     <div className="p-2.5 flex-1 flex flex-col justify-between">
                       <h4 className="text-xs sm:text-sm font-bold text-white line-clamp-1 group-hover:text-red-400 transition-colors">
                         {movie.title}
@@ -1012,7 +1162,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 ))}
               </div>
 
-              {/* Movie Pagination */}
               {visibleMovies.length < displayedMovies.length && (
                 <div className="p-4 bg-[#0e111a] rounded-xl border border-slate-800 flex items-center justify-between gap-3">
                   <span className="text-xs text-slate-400">
@@ -1030,10 +1179,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
-        {/* TAB 2: SÉRIES */}
         {activeTab === 'series' && (
           <div className="space-y-6">
-            {/* Xtream Series Category Pills (Sob Demanda TiviMate/Smarters) */}
             {isXtream && xtreamCategories.series.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-slate-400 px-1">
@@ -1131,7 +1278,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               ))}
             </div>
 
-            {/* Series Pagination */}
             {visibleSeries.length < displayedSeries.length && (
               <div className="p-4 bg-[#0e111a] rounded-xl border border-slate-800 flex items-center justify-between gap-3">
                 <span className="text-xs text-slate-400">
@@ -1148,13 +1294,10 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
-        {/* TAB 3: TV AO VIVO (matching Screenshot 3 and Screenshot 2) */}
         {activeTab === 'live' && (
           <div>
-            {/* SUB-VIEW A: Categorias / Pastas (Screenshot 3) */}
             {activeCategory === null && (
               <div className="bg-[#0e111a] rounded-2xl border border-slate-800/80 overflow-hidden shadow-xl divide-y divide-slate-800/50">
-                {/* 1. Todos */}
                 <button
                   onClick={() => setActiveCategory('Todos')}
                   className="w-full px-5 py-4 flex items-center justify-between hover:bg-slate-800/40 transition active:bg-slate-800 cursor-pointer text-left"
@@ -1168,7 +1311,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   <ChevronRight className="w-5 h-5 text-slate-400" />
                 </button>
 
-                {/* 2. Favoritos */}
                 <button
                   onClick={() => setActiveCategory('Favoritos')}
                   className="w-full px-5 py-4 flex items-center justify-between hover:bg-slate-800/40 transition active:bg-slate-800 cursor-pointer text-left"
@@ -1182,7 +1324,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   <ChevronRight className="w-5 h-5 text-slate-400" />
                 </button>
 
-                {/* 3. Último assistido */}
                 <button
                   onClick={() => setActiveCategory('Último assistido')}
                   className="w-full px-5 py-4 flex items-center justify-between hover:bg-slate-800/40 transition active:bg-slate-800 cursor-pointer text-left"
@@ -1196,7 +1337,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   <ChevronRight className="w-5 h-5 text-slate-400" />
                 </button>
 
-                {/* 4. Categorias Dinâmicas Xtream Sob Demanda ou Locais */}
                 {isXtream && xtreamCategories.live.length > 0 ? (
                   xtreamCategories.live.map((cat) => (
                     <button
@@ -1230,10 +1370,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
-            {/* SUB-VIEW B: Lista de Canais na Categoria (Screenshot 2) */}
             {activeCategory !== null && (
               <div className="space-y-2">
-                {/* Category Header with Counter */}
                 <div className="flex items-center justify-between px-2 pb-2 text-xs text-slate-400 border-b border-slate-800">
                   <span>
                     Exibindo <strong>{channelsForSelectedCategory.length}</strong> canais em <em>{activeCategory}</em>
@@ -1267,7 +1405,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                           nowPlaying?.item?.id === channel.id ? 'bg-red-950/20 border-l-4 border-red-600' : ''
                         }`}
                       >
-                        {/* Left: Logo Box (Square rounded) matching Screenshot 2 */}
                         <div className="flex items-center gap-3.5 min-w-0 flex-1">
                           <div className="w-12 h-12 rounded-xl bg-white flex items-center justify-center p-1.5 shadow-sm shrink-0 overflow-hidden border border-slate-700">
                             {channel.logoUrl ? (
@@ -1276,7 +1413,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                                 alt={channel.name}
                                 className="w-full h-full object-contain"
                                 onError={(e) => {
-                                  // Fallback monogram if image fails
                                   (e.target as HTMLElement).style.display = 'none';
                                 }}
                               />
@@ -1287,7 +1423,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             )}
                           </div>
 
-                          {/* Channel Name */}
                           <div className="min-w-0 flex-1">
                             <h4 className="font-bold text-sm sm:text-base text-white tracking-wide truncate group-hover:text-red-400 transition-colors">
                               {channel.name}
@@ -1298,7 +1433,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                           </div>
                         </div>
 
-                        {/* Right: Yellow Favorite Bookmark Icon matching Screenshot 2 */}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1316,7 +1450,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       </div>
                     ))}
 
-                    {/* Pagination Bar when list is large */}
                     {visibleChannels.length < channelsForSelectedCategory.length && (
                       <div className="p-4 bg-[#090c13] text-center flex flex-col sm:flex-row items-center justify-between gap-3">
                         <span className="text-xs text-slate-400">
@@ -1345,10 +1478,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
-        {/* TAB 4: CONFIGURAÇÕES */}
         {activeTab === 'settings' && (
           <div className="space-y-6">
-            {/* User Account Card */}
             <div className="bg-[#0e111a] rounded-2xl border border-slate-800 p-5 shadow-xl space-y-4">
               <div className="flex items-center justify-between border-b border-slate-800 pb-4">
                 <div className="flex items-center gap-3">
@@ -1376,7 +1507,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               </div>
 
-              {/* Expiration Details */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div className="bg-slate-900/70 p-3 rounded-xl border border-slate-800 flex items-center gap-3">
                   <Calendar className="w-5 h-5 text-slate-400" />
@@ -1397,7 +1527,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               </div>
 
-              {/* Playlist Status */}
               <div className="bg-slate-900/70 p-4 rounded-xl border border-slate-800 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-slate-400">Lista Conectada</span>
@@ -1417,7 +1546,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             </div>
 
-            {/* Logout Action */}
             <div className="pt-2">
               <button
                 onClick={onLogout}
@@ -1431,10 +1559,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         )}
       </main>
 
-      {/* FIXED BOTTOM NAVIGATION BAR matching screenshots */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[#090b10]/95 backdrop-blur-lg border-t border-slate-800/80 shadow-2xl">
         <div className="max-w-md mx-auto grid grid-cols-4 py-2 px-1">
-          {/* TAB 1: FILMES */}
           <button
             onClick={() => {
               setActiveTab('movies');
@@ -1460,7 +1586,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             </span>
           </button>
 
-          {/* TAB 2: SÉRIES */}
           <button
             onClick={() => {
               setActiveTab('series');
@@ -1486,7 +1611,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             </span>
           </button>
 
-          {/* TAB 3: TV AO VIVO */}
           <button
             onClick={() => {
               setActiveTab('live');
@@ -1512,7 +1636,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             </span>
           </button>
 
-          {/* TAB 4: CONFIGURAÇÕES */}
           <button
             onClick={() => {
               setActiveTab('settings');
@@ -1540,7 +1663,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
       </nav>
 
-      {/* VIDEO PLAYER THEATRE MODAL / FLOATING PLAYER */}
       <AnimatePresence>
         {nowPlaying && (
           <motion.div
@@ -1551,9 +1673,11 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           >
             <div
               ref={playerContainerRef}
+              onMouseMove={showControlsTemporarily}
+              onTouchStart={showControlsTemporarily}
+              onClick={showControlsTemporarily}
               className="relative w-full max-w-4xl mx-auto bg-black rounded-none sm:rounded-2xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col aspect-video max-h-[85vh]"
             >
-              {/* Top Controls Bar */}
               <div className="absolute top-0 left-0 right-0 z-20 p-3 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between text-white">
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
@@ -1584,7 +1708,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               </div>
 
-              {/* Video Element */}
               <video
                 ref={videoRef}
                 className="w-full h-full object-contain bg-black"
@@ -1592,16 +1715,35 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 autoPlay
                 controls={false}
                 onClick={() => {
-                  if (videoRef.current) {
-                    if (isPlaying) videoRef.current.pause();
-                    else videoRef.current.play();
-                    setIsPlaying(!isPlaying);
+                  if (controlsVisible) {
+                    if (videoRef.current) {
+                      if (isPlaying) videoRef.current.pause();
+                      else videoRef.current.play();
+                      setIsPlaying(!isPlaying);
+                    }
+                  } else {
+                    showControlsTemporarily();
                   }
                 }}
               />
 
-              {/* Buffering Spinner */}
-              {isBuffering && (
+              <AnimatePresence>
+                {isReconnecting && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-red-950/95 border border-red-500/50 px-4 py-2.5 rounded-xl flex items-center gap-2.5 text-red-200 text-xs shadow-lg pointer-events-none"
+                  >
+                    <RefreshCw className="w-4 h-4 text-red-400 animate-spin" />
+                    <span className="font-semibold">
+                      Reconectando... {reconnectAttempt}/3
+                    </span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {isBuffering && !isReconnecting && (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/50 pointer-events-none">
                   <div className="w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin mb-3 shadow-lg" />
                   <span className="text-xs font-semibold text-white bg-black/70 px-3 py-1 rounded-full">
@@ -1610,8 +1752,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               )}
 
-              {/* Playback Error Warning */}
-              {playerError && (
+              {playerError && !isReconnecting && (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 p-4 text-center">
                   <AlertCircle className="w-10 h-10 text-red-500 mb-2" />
                   <p className="text-sm font-semibold text-white mb-3">{playerError}</p>
@@ -1629,53 +1770,177 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               )}
 
-              {/* Bottom Video Controls Overlay */}
-              <div className="absolute bottom-0 left-0 right-0 z-20 p-3 bg-gradient-to-t from-black/90 via-black/40 to-transparent flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => {
-                      if (videoRef.current) {
-                        if (isPlaying) {
-                          videoRef.current.pause();
-                          setIsPlaying(false);
-                        } else {
-                          videoRef.current.play();
-                          setIsPlaying(true);
-                        }
-                      }
-                    }}
-                    className="w-9 h-9 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition active:scale-95 shadow-md"
+              <AnimatePresence>
+                {controlsVisible && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 20 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute bottom-0 left-0 right-0 z-20 px-3 pt-8 pb-3 bg-gradient-to-t from-black/95 via-black/60 to-transparent"
                   >
-                    {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
-                  </button>
+                    <AnimatePresence>
+                      {showBrightness && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 10 }}
+                          className="absolute bottom-16 left-3 bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl px-3 py-2 flex items-center gap-2 shadow-xl"
+                        >
+                          <Sun className="w-4 h-4 text-yellow-400" />
+                          <input
+                            type="range"
+                            min="0.3"
+                            max="1.5"
+                            step="0.05"
+                            value={brightness}
+                            onChange={(e) => setBrightness(parseFloat(e.target.value))}
+                            className="w-28 h-1 accent-yellow-400"
+                          />
+                          <span className="text-[10px] text-yellow-300 font-mono w-10 text-right">
+                            {Math.round(brightness * 100)}%
+                          </span>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
 
-                  <button
-                    onClick={() => {
-                      if (videoRef.current) {
-                        videoRef.current.muted = !isMuted;
-                        setIsMuted(!isMuted);
-                      }
-                    }}
-                    className="p-1.5 text-slate-300 hover:text-white transition"
-                  >
-                    {isMuted ? <VolumeX className="w-5 h-5 text-red-400" /> : <Volume2 className="w-5 h-5" />}
-                  </button>
-                </div>
+                    <AnimatePresence>
+                      {showQualityMenu && hlsLevels.length > 0 && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 10 }}
+                          className="absolute bottom-16 right-3 bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl py-1.5 shadow-xl min-w-[130px]"
+                        >
+                          <div className="px-3 py-1 text-[10px] text-slate-400 font-semibold uppercase tracking-wide border-b border-slate-800">
+                            Qualidade
+                          </div>
+                          <button
+                            onClick={() => changeQuality(-1)}
+                            className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 transition flex items-center justify-between ${
+                              currentLevel === -1 ? 'text-red-400 font-bold' : 'text-slate-200'
+                            }`}
+                          >
+                            <span>Auto</span>
+                            {currentLevel === -1 && <Check className="w-3 h-3" />}
+                          </button>
+                          {hlsLevels.slice().reverse().map((lvl) => (
+                            <button
+                              key={lvl.index}
+                              onClick={() => changeQuality(lvl.index)}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 transition flex items-center justify-between ${
+                                currentLevel === lvl.index ? 'text-red-400 font-bold' : 'text-slate-200'
+                              }`}
+                            >
+                              <span>{lvl.name}</span>
+                              {currentLevel === lvl.index && <Check className="w-3 h-3" />}
+                            </button>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
 
-                <div className="text-xs text-slate-300 font-medium">
-                  {nowPlaying.category}
-                </div>
-              </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 sm:gap-2">
+                        <button
+                          onClick={() => {
+                            if (videoRef.current) {
+                              if (isPlaying) { videoRef.current.pause(); setIsPlaying(false); }
+                              else { videoRef.current.play(); setIsPlaying(true); }
+                            }
+                          }}
+                          className="w-9 h-9 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition active:scale-95 shadow-md"
+                        >
+                          {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            if (videoRef.current) {
+                              videoRef.current.muted = !isMuted;
+                              setIsMuted(!isMuted);
+                            }
+                          }}
+                          className="p-1.5 text-slate-300 hover:text-white transition"
+                        >
+                          {isMuted ? <VolumeX className="w-5 h-5 text-red-400" /> : <Volume2 className="w-5 h-5" />}
+                        </button>
+
+                        {!isMuted && (
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={volume}
+                            onChange={(e) => setVolume(parseFloat(e.target.value))}
+                            className="hidden sm:block w-16 h-1 accent-red-500"
+                          />
+                        )}
+
+                        {nowPlaying.type === 'live' && lastChannel && (
+                          <button
+                            onClick={handleZapLast}
+                            className="hidden sm:flex items-center gap-1 px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-mono transition"
+                            title="Canal anterior"
+                          >
+                            <SkipBack className="w-3.5 h-3.5" />
+                            Zap
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 sm:gap-2">
+                        <button
+                          onClick={() => setShowBrightness(!showBrightness)}
+                          className={`p-1.5 sm:p-2 rounded-lg transition ${
+                            showBrightness ? 'bg-yellow-500/30 text-yellow-300' : 'bg-white/10 hover:bg-white/20 text-white'
+                          }`}
+                          title="Brilho"
+                        >
+                          <Sun className="w-4 h-4" />
+                        </button>
+
+                        {hlsLevels.length > 0 && (
+                          <button
+                            onClick={() => setShowQualityMenu(!showQualityMenu)}
+                            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-mono transition ${
+                              showQualityMenu ? 'bg-red-600/40 text-red-200' : 'bg-white/10 hover:bg-white/20 text-red-300'
+                            }`}
+                          >
+                            <Gauge className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">
+                              {currentLevel === -1 ? 'Auto' : hlsLevels.find((l) => l.index === currentLevel)?.name || 'Auto'}
+                            </span>
+                          </button>
+                        )}
+
+                        <button
+                          onClick={togglePiP}
+                          className={`p-1.5 sm:p-2 rounded-lg transition hidden sm:block ${
+                            isPipActive ? 'bg-red-600/40 text-red-300' : 'bg-white/10 hover:bg-white/20 text-white'
+                          }`}
+                          title="Picture-in-Picture"
+                        >
+                          <PictureInPicture2 className="w-4 h-4" />
+                        </button>
+
+                        <div className="hidden sm:block text-xs text-slate-300 font-medium px-2">
+                          {nowPlaying.category}
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Slide-out Menu Drawer */}
       <AnimatePresence>
         {isDrawerOpen && (
           <div className="fixed inset-0 z-50 flex">
-            {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -1684,7 +1949,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               className="fixed inset-0 bg-black/70 backdrop-blur-sm"
             />
 
-            {/* Drawer Panel */}
             <motion.div
               initial={{ x: '-100%' }}
               animate={{ x: 0 }}
@@ -1797,7 +2061,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         )}
       </AnimatePresence>
 
-      {/* MODAL DE DETALHES DA SÉRIE (TEMPORADAS & EPISÓDIOS SOB DEMANDA ESTILO SMARTERS/TIVIMATE) */}
       <AnimatePresence>
         {seriesModal.isOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
@@ -1815,7 +2078,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               exit={{ scale: 0.95, opacity: 0, y: 20 }}
               className="relative w-full max-w-3xl bg-[#0e121d] border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden z-10 max-h-[90vh] flex flex-col my-auto"
             >
-              {/* Header banner */}
               <div className="relative p-5 bg-gradient-to-b from-red-950/40 via-[#0e121d] to-[#0e121d] border-b border-slate-800 flex items-start justify-between gap-4">
                 <div className="flex items-start gap-4">
                   <div className="w-20 sm:w-24 aspect-[2/3] rounded-xl overflow-hidden bg-slate-900 border border-slate-700 shadow-md shrink-0">
@@ -1860,7 +2122,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </button>
               </div>
 
-              {/* Seasons Selector Tabs */}
               {seriesModal.seasons.length > 0 && (
                 <div className="px-5 py-3 border-b border-slate-800 bg-[#0a0d16] flex items-center gap-2 overflow-x-auto scrollbar-thin">
                   {seriesModal.seasons.map((s: any) => {
@@ -1883,7 +2144,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               )}
 
-              {/* Episodes List */}
               <div className="p-5 flex-1 overflow-y-auto space-y-2.5">
                 {seriesModal.loading ? (
                   <div className="py-16 text-center">
