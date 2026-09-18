@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { UserAccount } from '../types';
 import {
   Users, X, Search, Lock, Unlock, Trash2, UserPlus, RefreshCw,
@@ -6,7 +6,7 @@ import {
   Clock, Crown, Briefcase, CalendarPlus, AlertTriangle,
   UserCheck, UserX, TrendingUp, LayoutDashboard, Settings as SettingsIcon,
   LogOut, ChevronRight, Play, Menu, Shield, Sparkles, Check,
-  Palette, GripVertical, Save
+  Palette, GripVertical, Save, Upload, Image as ImageIcon, Type, Palette as PaletteIcon
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -21,11 +21,36 @@ interface ClientTabConfig {
   visible: boolean;
 }
 
+interface ClientBranding {
+  appName: string;
+  accentColor: string;
+  logoUrl: string;
+  footerText: string;
+}
+
 const DEFAULT_CLIENT_TABS: ClientTabConfig[] = [
   { id: 'movies', label: 'FILMES', visible: true },
   { id: 'series', label: 'SÉRIES', visible: true },
   { id: 'live', label: 'TV AO VIVO', visible: true },
   { id: 'settings', label: 'CONFIGURAÇÕES', visible: true },
+];
+
+const DEFAULT_BRANDING: ClientBranding = {
+  appName: 'RPR TV',
+  accentColor: '#dc2626',
+  logoUrl: '',
+  footerText: 'Transmissão HD • Canais ao Vivo • Player Rápido',
+};
+
+const COLOR_PRESETS = [
+  { name: 'Vermelho', value: '#dc2626' },
+  { name: 'Azul', value: '#2563eb' },
+  { name: 'Verde', value: '#16a34a' },
+  { name: 'Roxo', value: '#9333ea' },
+  { name: 'Laranja', value: '#ea580c' },
+  { name: 'Rosa', value: '#db2777' },
+  { name: 'Ciano', value: '#0891b2' },
+  { name: 'Âmbar', value: '#d97706' },
 ];
 
 export const normalizeUserRole = (r?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' => {
@@ -69,9 +94,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const [settingLoading, setSettingLoading] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  // Aparência — config dos botões do app cliente
+  // Aparência — config dos botões + branding
   const [clientTabs, setClientTabs] = useState<ClientTabConfig[]>(DEFAULT_CLIENT_TABS);
-  const [savingTabs, setSavingTabs] = useState(false);
+  const [branding, setBranding] = useState<ClientBranding>(DEFAULT_BRANDING);
+  const [savingAppearance, setSavingAppearance] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
   const currentAdminRole = normalizeUserRole(currentAdmin.role);
   const isMaster = currentAdminRole === 'AdminMaster';
@@ -129,6 +156,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
         }
         if (data.settings && Array.isArray(data.settings.clientTabs) && data.settings.clientTabs.length > 0) {
           setClientTabs(data.settings.clientTabs);
+        }
+        if (data.settings && data.settings.branding) {
+          setBranding({ ...DEFAULT_BRANDING, ...data.settings.branding });
         }
       } else {
         setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao carregar usuários.' });
@@ -359,15 +389,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
 
   // ========== AÇÕES DA ABA APARÊNCIA ==========
   const handleToggleTabVisible = (tabId: string) => {
-    setClientTabs(prev =>
-      prev.map(t => t.id === tabId ? { ...t, visible: !t.visible } : t)
-    );
+    setClientTabs(prev => prev.map(t => t.id === tabId ? { ...t, visible: !t.visible } : t));
   };
 
   const handleRenameTab = (tabId: string, newLabel: string) => {
-    setClientTabs(prev =>
-      prev.map(t => t.id === tabId ? { ...t, label: newLabel.slice(0, 20) } : t)
-    );
+    setClientTabs(prev => prev.map(t => t.id === tabId ? { ...t, label: newLabel.slice(0, 20) } : t));
   };
 
   const handleMoveTab = (tabId: string, direction: 'up' | 'down') => {
@@ -382,29 +408,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     });
   };
 
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 400 * 1024) {
+      setFeedbackMsg({ type: 'error', text: 'Imagem muito grande. Máximo 400KB.' });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setBranding(prev => ({ ...prev, logoUrl: String(reader.result || '') }));
+    };
+    reader.readAsDataURL(file);
+    if (logoInputRef.current) logoInputRef.current.value = '';
+  };
+
   const handleSaveAppearance = async () => {
-    setSavingTabs(true);
+    setSavingAppearance(true);
     try {
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
-        body: JSON.stringify({ clientTabs }),
+        body: JSON.stringify({ clientTabs, branding }),
       });
       const data = await res.json();
       if (data.success) {
-        setFeedbackMsg({ type: 'success', text: 'Aparência atualizada! Os clientes verão a mudança ao recarregar.' });
+        setFeedbackMsg({ type: 'success', text: 'Aparência atualizada! Recarregue o app cliente pra ver.' });
       } else {
         setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao salvar.' });
       }
     } catch {
       setFeedbackMsg({ type: 'error', text: 'Falha ao salvar aparência.' });
     } finally {
-      setSavingTabs(false);
+      setSavingAppearance(false);
     }
   };
 
   const handleResetAppearance = () => {
     setClientTabs(DEFAULT_CLIENT_TABS);
+    setBranding(DEFAULT_BRANDING);
     setFeedbackMsg({ type: 'success', text: 'Valores resetados. Clique em Salvar para aplicar.' });
   };
 
@@ -453,11 +495,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
       {/* SIDEBAR */}
       <aside className={`fixed lg:sticky top-0 left-0 h-screen w-72 bg-[#0b0b12] border-r border-red-900/30 flex flex-col z-50 transition-transform ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="px-5 py-5 border-b border-red-900/20 flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-red-700 to-red-500 flex items-center justify-center shadow-lg shadow-red-600/30 shrink-0">
-            <Tv className="w-5 h-5 text-white" />
+          <div
+            className="w-11 h-11 rounded-2xl flex items-center justify-center shadow-lg shrink-0 overflow-hidden"
+            style={{ background: `linear-gradient(135deg, ${branding.accentColor}, ${branding.accentColor}cc)`, boxShadow: `0 8px 20px -6px ${branding.accentColor}80` }}
+          >
+            {branding.logoUrl ? (
+              <img src={branding.logoUrl} alt="logo" className="w-full h-full object-contain" />
+            ) : (
+              <Tv className="w-5 h-5 text-white" />
+            )}
           </div>
           <div className="min-w-0">
-            <h1 className="font-black text-white text-base">RPR TV</h1>
+            <h1 className="font-black text-white text-base truncate">{branding.appName}</h1>
             <p className="text-[10px] text-slate-400 font-mono">Painel Master</p>
           </div>
           <button type="button" onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden p-1.5 text-slate-400">
@@ -487,12 +536,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 key={item.id}
                 type="button"
                 onClick={() => { setSection(item.id); setSidebarOpen(false); setSearchQuery(''); setPendingDeleteId(null); }}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition ${active ? 'bg-red-700/30 text-white border border-red-600/40' : 'text-slate-400 hover:text-white hover:bg-slate-800/50 border border-transparent'}`}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition border ${active ? 'text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/50 border-transparent'}`}
+                style={active ? { background: `${branding.accentColor}30`, borderColor: `${branding.accentColor}70` } : {}}
               >
-                <Icon className={`w-4 h-4 ${active ? 'text-red-400' : ''}`} />
+                <Icon className="w-4 h-4" style={active ? { color: branding.accentColor } : {}} />
                 <span className="flex-1 text-left">{item.label}</span>
                 {typeof item.badge === 'number' && item.badge > 0 && (
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${active ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-300'}`}>{item.badge}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${!active ? 'bg-slate-800 text-slate-300' : 'text-white'}`}
+                    style={active ? { background: branding.accentColor } : {}}
+                  >
+                    {item.badge}
+                  </span>
                 )}
               </button>
             );
@@ -578,24 +633,169 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
 
           {/* APARÊNCIA */}
           {section === 'appearance' && isMaster && (
-            <div className="max-w-3xl mx-auto space-y-4">
-              <div className="p-5 rounded-2xl bg-gradient-to-br from-purple-950/30 to-[#0f0f17] border border-purple-800/40">
-                <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-purple-500/20 border border-purple-500/40 flex items-center justify-center">
-                    <Palette className="w-6 h-6 text-purple-400" />
-                  </div>
+            <div className="max-w-3xl mx-auto space-y-5">
+
+              {/* Header */}
+              <div className="p-5 rounded-2xl border flex items-center gap-3" style={{ background: `linear-gradient(135deg, ${branding.accentColor}20, #0f0f17)`, borderColor: `${branding.accentColor}60` }}>
+                <div className="w-12 h-12 rounded-xl flex items-center justify-center border" style={{ background: `${branding.accentColor}25`, borderColor: `${branding.accentColor}60` }}>
+                  <Palette className="w-6 h-6" style={{ color: branding.accentColor }} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Aparência do App do Cliente</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Personalize nome, cor, logo e os botões da barra inferior. Clientes veem a mudança ao recarregar.
+                  </p>
+                </div>
+              </div>
+
+              {/* Identidade Visual */}
+              <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-800/60 flex items-center gap-2">
+                  <ImageIcon className="w-4 h-4" style={{ color: branding.accentColor }} />
+                  <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">Identidade Visual</span>
+                </div>
+
+                <div className="p-5 space-y-5">
+                  {/* Nome do App */}
                   <div>
-                    <h3 className="text-base font-bold text-white">Aparência do App do Cliente</h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Edite os botões da barra inferior do app. Os clientes verão a mudança ao recarregar o app.
-                    </p>
+                    <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
+                      <Type className="w-3.5 h-3.5" />
+                      Nome do App
+                    </label>
+                    <input
+                      type="text"
+                      value={branding.appName}
+                      onChange={e => setBranding(prev => ({ ...prev, appName: e.target.value.slice(0, 30) }))}
+                      maxLength={30}
+                      placeholder="RPR TV"
+                      className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm font-bold text-white placeholder-slate-500 focus:outline-none focus:ring-2"
+                      style={{ outlineColor: branding.accentColor }}
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1 font-mono">{branding.appName.length}/30 caracteres</p>
+                  </div>
+
+                  {/* Cor Principal */}
+                  <div>
+                    <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
+                      <PaletteIcon className="w-3.5 h-3.5" />
+                      Cor Principal
+                    </label>
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {COLOR_PRESETS.map(c => (
+                        <button
+                          key={c.value}
+                          type="button"
+                          onClick={() => setBranding(prev => ({ ...prev, accentColor: c.value }))}
+                          className={`w-10 h-10 rounded-xl border-2 transition ${branding.accentColor === c.value ? 'scale-110 shadow-lg' : 'hover:scale-105'}`}
+                          style={{
+                            background: c.value,
+                            borderColor: branding.accentColor === c.value ? '#fff' : 'transparent',
+                            boxShadow: branding.accentColor === c.value ? `0 0 20px ${c.value}80` : 'none'
+                          }}
+                          title={c.name}
+                        >
+                          {branding.accentColor === c.value && <Check className="w-5 h-5 text-white mx-auto" />}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={branding.accentColor}
+                        onChange={e => setBranding(prev => ({ ...prev, accentColor: e.target.value }))}
+                        className="w-12 h-10 rounded-xl bg-transparent border border-slate-700/80 cursor-pointer"
+                      />
+                      <input
+                        type="text"
+                        value={branding.accentColor}
+                        onChange={e => {
+                          const v = e.target.value;
+                          if (/^#[0-9a-fA-F]{0,6}$/.test(v)) setBranding(prev => ({ ...prev, accentColor: v }));
+                        }}
+                        maxLength={7}
+                        placeholder="#dc2626"
+                        className="w-28 bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2 text-sm font-mono text-white focus:outline-none"
+                      />
+                      <span className="text-[11px] text-slate-500">
+                        Cliente verá botões, destaques e ícones nessa cor
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Logo */}
+                  <div>
+                    <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
+                      <ImageIcon className="w-3.5 h-3.5" />
+                      Logo (opcional)
+                    </label>
+                    <div className="flex items-center gap-4">
+                      <div
+                        className="w-16 h-16 rounded-2xl flex items-center justify-center border-2 overflow-hidden shrink-0"
+                        style={{ background: `${branding.accentColor}20`, borderColor: `${branding.accentColor}60` }}
+                      >
+                        {branding.logoUrl ? (
+                          <img src={branding.logoUrl} alt="logo" className="w-full h-full object-contain" />
+                        ) : (
+                          <Tv className="w-8 h-8 text-slate-500" />
+                        )}
+                      </div>
+                      <div className="flex-1 space-y-2">
+                        <input
+                          ref={logoInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                          onChange={handleLogoUpload}
+                          className="hidden"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => logoInputRef.current?.click()}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            Escolher imagem
+                          </button>
+                          {branding.logoUrl && (
+                            <button
+                              type="button"
+                              onClick={() => setBranding(prev => ({ ...prev, logoUrl: '' }))}
+                              className="px-3 py-2 rounded-xl text-xs font-semibold bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 border border-rose-800/50"
+                            >
+                              Remover
+                            </button>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          PNG, JPG, WebP ou SVG • Máximo 400KB • Aparece no login e no header
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Rodapé */}
+                  <div>
+                    <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
+                      <Type className="w-3.5 h-3.5" />
+                      Texto do Rodapé
+                    </label>
+                    <input
+                      type="text"
+                      value={branding.footerText}
+                      onChange={e => setBranding(prev => ({ ...prev, footerText: e.target.value.slice(0, 80) }))}
+                      maxLength={80}
+                      placeholder="Transmissão HD • Canais ao Vivo"
+                      className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1 font-mono">{branding.footerText.length}/80 caracteres</p>
                   </div>
                 </div>
               </div>
 
+              {/* Botões da Barra */}
               <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-800/60 flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                  <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
                     Botões da Barra Inferior
                   </span>
                   <span className="text-[10px] text-slate-500 font-mono">
@@ -611,14 +811,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
 
                     return (
                       <div key={tab.id} className="p-4 flex flex-col sm:flex-row sm:items-center gap-3">
-                        {/* Mover */}
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             type="button"
                             onClick={() => handleMoveTab(tab.id, 'up')}
                             disabled={isFirst}
                             className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="Mover pra cima"
                           >
                             ▲
                           </button>
@@ -627,26 +825,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                             onClick={() => handleMoveTab(tab.id, 'down')}
                             disabled={isLast}
                             className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
-                            title="Mover pra baixo"
                           >
                             ▼
                           </button>
                           <GripVertical className="w-4 h-4 text-slate-600 hidden sm:block" />
                         </div>
 
-                        {/* Ícone do botão */}
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
-                          tab.visible
-                            ? 'bg-red-600/20 border-red-500/40 text-red-400'
-                            : 'bg-slate-800 border-slate-700 text-slate-500'
-                        }`}>
+                        <div
+                          className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border"
+                          style={tab.visible ? { background: `${branding.accentColor}25`, borderColor: `${branding.accentColor}60`, color: branding.accentColor } : { background: '#1a1a24', borderColor: '#334155', color: '#64748b' }}
+                        >
                           {tab.id === 'movies' && <Tv className="w-5 h-5" />}
                           {tab.id === 'series' && <Play className="w-5 h-5" />}
                           {tab.id === 'live' && <Play className="w-5 h-5" />}
                           {tab.id === 'settings' && <SettingsIcon className="w-5 h-5" />}
                         </div>
 
-                        {/* Input do nome */}
                         <div className="flex-1 min-w-0">
                           <label className="block text-[10px] text-slate-500 font-semibold uppercase tracking-wide mb-1">
                             Nome do botão
@@ -658,9 +852,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                             maxLength={20}
                             disabled={isFixed}
                             placeholder="NOME"
-                            className={`w-full bg-[#15151f] border rounded-xl px-3 py-2 text-sm font-bold text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-red-500 ${
+                            className={`w-full bg-[#15151f] border rounded-xl px-3 py-2 text-sm font-bold text-white placeholder-slate-500 focus:outline-none focus:ring-2 ${
                               isFixed ? 'border-slate-800 opacity-60 cursor-not-allowed' : 'border-slate-700/80'
                             }`}
+                            style={!isFixed ? { outlineColor: branding.accentColor } : {}}
                           />
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-[10px] text-slate-500 font-mono">
@@ -668,13 +863,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                             </span>
                             {isFixed && (
                               <span className="text-[10px] text-amber-400 font-semibold">
-                                Não pode ser renomeado/oculto
+                                Fixo (não pode ser renomeado/oculto)
                               </span>
                             )}
                           </div>
                         </div>
 
-                        {/* Toggle visível */}
                         <button
                           type="button"
                           onClick={() => !isFixed && handleToggleTabVisible(tab.id)}
@@ -693,34 +887,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                     );
                   })}
                 </div>
+              </div>
 
-                <div className="px-5 py-4 bg-[#0b0b12] border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-3">
-                  <button
-                    type="button"
-                    onClick={handleResetAppearance}
-                    className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
-                  >
-                    Restaurar Padrão
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveAppearance}
-                    disabled={savingTabs}
-                    className="px-5 py-2.5 rounded-xl text-sm font-bold bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-400 text-white shadow-lg shadow-red-600/30 flex items-center gap-2 disabled:opacity-50"
-                  >
-                    {savingTabs ? (
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Save className="w-4 h-4" />
-                    )}
-                    {savingTabs ? 'Salvando...' : 'Salvar Alterações'}
-                  </button>
-                </div>
+              {/* Footer de ações */}
+              <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-[#0f0f17] border border-slate-800/60">
+                <button
+                  type="button"
+                  onClick={handleResetAppearance}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+                >
+                  Restaurar Padrão
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveAppearance}
+                  disabled={savingAppearance}
+                  className="px-5 py-2.5 rounded-xl text-sm font-bold text-white shadow-lg flex items-center gap-2 disabled:opacity-50 transition"
+                  style={{ background: `linear-gradient(135deg, ${branding.accentColor}, ${branding.accentColor}cc)`, boxShadow: `0 10px 25px -8px ${branding.accentColor}90` }}
+                >
+                  {savingAppearance ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Save className="w-4 h-4" />
+                  )}
+                  {savingAppearance ? 'Salvando...' : 'Salvar Alterações'}
+                </button>
               </div>
 
               <div className="p-4 rounded-2xl bg-blue-950/20 border border-blue-800/40">
                 <p className="text-xs text-blue-200 leading-relaxed">
-                  💡 <strong>Dica:</strong> Os botões <strong>TV AO VIVO</strong> e <strong>CONFIGURAÇÕES</strong> são fixos — não podem ser renomeados nem ocultados, para garantir que o cliente sempre tenha acesso ao conteúdo principal e ao perfil dele.
+                  <strong>Dica:</strong> Os botões <strong>TV AO VIVO</strong> e <strong>CONFIGURAÇÕES</strong> são fixos — não podem ser renomeados nem ocultados, para garantir que o cliente sempre tenha acesso ao conteúdo principal e ao perfil dele.
                 </p>
               </div>
             </div>
@@ -835,14 +1031,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
               <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl p-4">
                 <div className="relative">
                   <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Buscar por nome, @login ou email..." className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500" />
+                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Buscar por nome, @login ou email..." className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none" />
                   {searchQuery && <button type="button" onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"><X className="w-4 h-4" /></button>}
                 </div>
                 <p className="text-[11px] text-slate-500 mt-2 font-mono">{filteredUsers.length} de {users.length}</p>
               </div>
 
               {loading && users.length === 0 ? (
-                <div className="py-20 flex flex-col items-center text-slate-400 gap-3"><RefreshCw className="w-7 h-7 animate-spin text-red-500" /><span className="text-xs">Carregando...</span></div>
+                <div className="py-20 flex flex-col items-center text-slate-400 gap-3"><RefreshCw className="w-7 h-7 animate-spin" style={{ color: branding.accentColor }} /><span className="text-xs">Carregando...</span></div>
               ) : filteredUsers.length === 0 ? (
                 <div className="py-20 text-center bg-[#0f0f17] border border-slate-800/60 rounded-2xl">
                   <Users className="w-8 h-8 mx-auto mb-2 text-slate-500" />
