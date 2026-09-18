@@ -1,1621 +1,1776 @@
-import express from "express";
-import path from "path";
-import http from "http";
-import https from "https";
-import fs from "fs";
-import crypto from "crypto";
-import { Readable } from "stream";
-import { createServer as createViteServer } from "vite";
+import React, { useState, useEffect } from 'react';
+import { UserAccount, UserRole } from '../types';
+import { 
+  Users, 
+  X, 
+  Search, 
+  ShieldAlert, 
+  ShieldCheck, 
+  Lock, 
+  Unlock, 
+  Trash2, 
+  UserPlus, 
+  RefreshCw, 
+  AlertCircle, 
+  CheckCircle, 
+  ToggleLeft, 
+  ToggleRight,
+  Shield,
+  User as UserIcon,
+  Calendar,
+  Eye,
+  EyeOff,
+  Sparkles,
+  Key,
+  Copy,
+  Check,
+  Mail,
+  Pencil,
+  Tv,
+  Globe,
+  Clock,
+  Crown,
+  Briefcase,
+  CalendarPlus,
+  AlertTriangle
+} from 'lucide-react';
 
-const app = express();
-const PORT = 3000;
-
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-
-// ----------------------------------------------------
-// Authentication & User Accounts Management
-// ----------------------------------------------------
-export type UserRole = 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' | 'admin' | 'user';
-
-interface StoredUser {
-  id: string;
-  username: string;
-  name: string;
-  email?: string;
-  passwordHash: string;
-  salt: string;
-  role: 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' | 'admin' | 'user';
-  createdAt: string;
-  isBlocked?: boolean;
-  playlistUrl?: string;
-  playlistName?: string;
-  playlistUpdatedAt?: string;
-  expirationDate?: string | null;
-  createdBy?: string;
-  createdByName?: string;
+interface AdminUsersModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  currentAdmin: UserAccount;
 }
 
-function normalizeRole(role?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' {
-  if (role === 'AdminMaster' || role === 'admin') return 'AdminMaster';
-  if (role === 'AdminRevenda') return 'AdminRevenda';
+export const normalizeUserRole = (r?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' => {
+  if (!r) return 'UsuarioComum';
+  const lower = r.toLowerCase();
+  if (lower === 'adminmaster' || lower === 'master' || lower === 'admin') return 'AdminMaster';
+  if (lower === 'adminrevenda' || lower === 'revenda') return 'AdminRevenda';
   return 'UsuarioComum';
-}
+};
 
-function isDateExpired(dateStr?: string | null): boolean {
-  if (!dateStr) return false;
-  let timestamp: number;
-  if (dateStr.length === 10) {
-    timestamp = new Date(`${dateStr}T23:59:59.999`).getTime();
-  } else {
-    timestamp = new Date(dateStr).getTime();
+export const formatDateDisplay = (dateStr?: string | null): string => {
+  if (!dateStr) return 'Vitalício';
+  const parts = dateStr.slice(0, 10).split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
   }
-  if (isNaN(timestamp)) return false;
-  return Date.now() > timestamp;
-}
+  return dateStr;
+};
 
-function formatDateBR(dateStr?: string | null): string {
-  if (!dateStr) return "Vitalício";
-  try {
-    const parts = dateStr.slice(0, 10).split("-");
-    if (parts.length === 3) {
-      return `${parts[2]}/${parts[1]}/${parts[0]}`;
-    }
-    return new Date(dateStr).toLocaleDateString("pt-BR");
-  } catch {
-    return dateStr || "Vitalício";
+export const getExpirationInfo = (expirationDate?: string | null) => {
+  if (!expirationDate || expirationDate === 'vitalicio') {
+    return { status: 'vitalicio' as const, label: 'Vitalício', isExpired: false, daysLeft: Infinity };
   }
-}
-
-function formatSafeUser(u: StoredUser) {
-  return {
-    id: u.id,
-    username: u.username,
-    name: u.name,
-    email: u.email,
-    role: normalizeRole(u.role),
-    createdAt: u.createdAt,
-    isBlocked: !!u.isBlocked,
-    playlistUrl: u.playlistUrl,
-    playlistName: u.playlistName,
-    playlistUpdatedAt: u.playlistUpdatedAt,
-    expirationDate: u.expirationDate !== undefined ? u.expirationDate : null,
-    createdBy: u.createdBy,
-    createdByName: u.createdByName,
-  };
-}
-
-interface SystemSettings {
-  allowPublicRegistration: boolean;
-}
-
-const DATA_DIR = path.join(process.cwd(), "data");
-const USERS_FILE = path.join(DATA_DIR, "users.json");
-const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
-const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
-
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  const exp = new Date(`${expirationDate.slice(0, 10)}T23:59:59`);
+  const now = new Date();
+  const diffMs = exp.getTime() - now.getTime();
+  const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  if (daysLeft < 0) {
+    return { status: 'expired' as const, label: `Vencido (${formatDateDisplay(expirationDate)})`, isExpired: true, daysLeft };
   }
-}
-
-function loadSettings(): SystemSettings {
-  try {
-    ensureDataDir();
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const raw = fs.readFileSync(SETTINGS_FILE, "utf-8");
-      return JSON.parse(raw);
-    }
-  } catch (e) {
-    console.error("[Auth] Erro ao ler settings.json:", e);
+  if (daysLeft <= 5) {
+    return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft };
   }
-  return { allowPublicRegistration: true };
-}
+  return { status: 'active' as const, label: `Válido até ${formatDateDisplay(expirationDate)}`, isExpired: false, daysLeft };
+};
 
-function saveSettings(settings: SystemSettings) {
-  try {
-    ensureDataDir();
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
-  } catch (e) {
-    console.error("[Auth] Erro ao salvar settings.json:", e);
-  }
-}
+export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
+  isOpen,
+  onClose,
+  currentAdmin,
+}) => {
+  const [activeTab, setActiveTab] = useState<'list' | 'create'>('list');
+  const [filterRole, setFilterRole] = useState<'all' | 'UsuarioComum' | 'AdminRevenda' | 'AdminMaster' | 'expired'>('all');
+  const [users, setUsers] = useState<UserAccount[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [allowRegistration, setAllowRegistration] = useState<boolean>(true);
+  const [settingLoading, setSettingLoading] = useState<boolean>(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-function hashPassword(password: string, salt: string): string {
-  return crypto.pbkdf2Sync(password, salt, 10000, 64, "sha512").toString("hex");
-}
+  const currentAdminRole = normalizeUserRole(currentAdmin.role);
+  const isMaster = currentAdminRole === 'AdminMaster';
+  const isRevenda = currentAdminRole === 'AdminRevenda';
 
-function loadUsers(): StoredUser[] {
-  try {
-    ensureDataDir();
-    if (fs.existsSync(USERS_FILE)) {
-      const raw = fs.readFileSync(USERS_FILE, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        let changed = false;
-        const normalized: StoredUser[] = parsed.map((u: any) => {
-          let r = u.role;
-          if (r === 'admin') {
-            r = 'AdminMaster';
-            changed = true;
-          } else if (r === 'user') {
-            r = 'UsuarioComum';
-            changed = true;
-          }
-          return {
-            ...u,
-            role: r,
-            expirationDate: u.expirationDate !== undefined ? u.expirationDate : null,
-          };
-        });
-        if (changed) {
-          saveUsers(normalized);
-        }
-        return normalized;
-      }
-    }
-  } catch (e) {
-    console.error("[Auth] Erro ao ler users.json:", e);
-  }
-
-  // Contas padrão iniciais — só criadas quando o arquivo não existe
-  const defaultSalt = crypto.randomBytes(16).toString("hex");
-  const defaultAdmin: StoredUser = {
-    id: "user_admin",
-    username: "admin",
-    name: "Administrador Master",
-    email: "admin@iptvpro.local",
-    salt: defaultSalt,
-    passwordHash: hashPassword("admin", defaultSalt),
-    role: "AdminMaster",
-    createdAt: new Date().toISOString(),
-    isBlocked: false,
-    expirationDate: null,
-  };
-
-  const clientSalt = crypto.randomBytes(16).toString("hex");
-  const in30Days = new Date();
-  in30Days.setDate(in30Days.getDate() + 30);
-  const defaultClient: StoredUser = {
-    id: "user_cliente_demo",
-    username: "cliente",
-    name: "Cliente Final",
-    email: "cliente@iptv.local",
-    salt: clientSalt,
-    passwordHash: hashPassword("123456", clientSalt),
-    role: "UsuarioComum",
-    createdAt: new Date().toISOString(),
-    isBlocked: false,
-    expirationDate: in30Days.toISOString().split("T")[0],
-  };
-
-  const initialUsers = [defaultAdmin, defaultClient];
-  saveUsers(initialUsers);
-  return initialUsers;
-}
-
-function saveUsers(users: StoredUser[]) {
-  try {
-    ensureDataDir();
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), "utf-8");
-  } catch (e) {
-    console.error("[Auth] Erro ao salvar users.json:", e);
-  }
-}
-
-function loadSessions(): Map<string, { userId: string; expiresAt: number }> {
-  const map = new Map<string, { userId: string; expiresAt: number }>();
-  try {
-    ensureDataDir();
-    if (fs.existsSync(SESSIONS_FILE)) {
-      const raw = fs.readFileSync(SESSIONS_FILE, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (typeof parsed === "object" && parsed !== null) {
-        for (const [k, v] of Object.entries(parsed)) {
-          if (v && typeof v === "object" && (v as any).userId && (v as any).expiresAt > Date.now()) {
-            map.set(k, v as { userId: string; expiresAt: number });
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.error("[Auth] Erro ao carregar sessions.json:", e);
-  }
-  return map;
-}
-
-function saveSessions(map: Map<string, { userId: string; expiresAt: number }>) {
-  try {
-    ensureDataDir();
-    const obj: Record<string, { userId: string; expiresAt: number }> = {};
-    for (const [k, v] of map.entries()) {
-      if (v && v.expiresAt > Date.now()) {
-        obj[k] = v;
-      }
-    }
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(obj, null, 2), "utf-8");
-  } catch (e) {
-    console.error("[Auth] Erro ao salvar sessions.json:", e);
-  }
-}
-
-const sessions = loadSessions();
-
-function getAuthenticatedAdmin(req: express.Request): { 
-  adminUser: StoredUser | null; 
-  isMaster: boolean; 
-  isRevenda: boolean; 
-  error?: string 
-} {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.query.token as string);
-
-  if (!token) {
-    return { adminUser: null, isMaster: false, isRevenda: false, error: "Token de autenticação não fornecido." };
-  }
-
-  if (token === "token_local_admin") {
-    const users = loadUsers();
-    const admin = users.find(u => normalizeRole(u.role) === "AdminMaster" && !u.isBlocked);
-    if (admin) return { adminUser: admin, isMaster: true, isRevenda: false };
-  }
-
-  const session = sessions.get(token);
-  if (!session || session.expiresAt < Date.now()) {
-    return { adminUser: null, isMaster: false, isRevenda: false, error: "Sessão inválida ou expirada." };
-  }
-
-  const users = loadUsers();
-  const user = users.find(u => u.id === session.userId);
-  if (!user || user.isBlocked) {
-    return { adminUser: null, isMaster: false, isRevenda: false, error: "Usuário não encontrado ou bloqueado." };
-  }
-
-  const role = normalizeRole(user.role);
-  if (role !== "AdminMaster" && role !== "AdminRevenda") {
-    return { adminUser: null, isMaster: false, isRevenda: false, error: "Acesso restrito apenas a AdminMaster e AdminRevenda." };
-  }
-
-  if (role === "AdminRevenda" && isDateExpired(user.expirationDate)) {
-    return { 
-      adminUser: null, 
-      isMaster: false, 
-      isRevenda: false, 
-      error: `Sua conta de revendedor venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com o AdminMaster.` 
-    };
-  }
-
-  return { 
-    adminUser: user, 
-    isMaster: role === "AdminMaster", 
-    isRevenda: role === "AdminRevenda" 
-  };
-}
-
-function getAuthenticatedUser(req: express.Request): { user: StoredUser | null; isExpired?: boolean; error?: string } {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.query.token as string);
-
-  if (!token) {
-    return { user: null, error: "Token de autenticação não fornecido." };
-  }
-
-  const users = loadUsers();
-  if (token === "token_local_admin") {
-    const admin = users.find(u => normalizeRole(u.role) === "AdminMaster" && !u.isBlocked);
-    if (admin) return { user: admin };
-  }
-
-  const session = sessions.get(token);
-  if (!session || session.expiresAt < Date.now()) {
-    return { user: null, error: "Sessão inválida ou expirada." };
-  }
-
-  const user = users.find(u => u.id === session.userId);
-  if (!user || user.isBlocked) {
-    return { user: null, error: "Usuário não encontrado ou bloqueado." };
-  }
-
-  const role = normalizeRole(user.role);
-  if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
-    return { 
-      user: null, 
-      isExpired: true, 
-      error: `Seu acesso venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com o suporte ou seu revendedor para renovar.` 
-    };
-  }
-
-  return { user };
-}
-
-app.get("/api/auth/settings", (req, res) => {
-  const settings = loadSettings();
-  return res.json({ success: true, settings });
-});
-
-app.post("/api/auth/login", (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) {
-    return res.status(400).json({ success: false, error: "Usuário e senha são obrigatórios." });
-  }
-
-  const users = loadUsers();
-  const user = users.find(u => u.username.toLowerCase() === String(username).trim().toLowerCase());
-  if (!user) {
-    return res.status(401).json({ success: false, error: "Usuário ou senha incorretos." });
-  }
-
-  if (user.isBlocked) {
-    return res.status(403).json({
-      success: false,
-      error: "Esta conta foi bloqueada pelo administrador. Acesso negado."
-    });
-  }
-
-  const role = normalizeRole(user.role);
-  if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
-    return res.status(403).json({
-      success: false,
-      isExpired: true,
-      expirationDate: user.expirationDate,
-      error: `Seu acesso venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com seu revendedor ou suporte para renovar o acesso.`
-    });
-  }
-
-  const calculatedHash = hashPassword(String(password), user.salt);
-  if (calculatedHash !== user.passwordHash) {
-    return res.status(401).json({ success: false, error: "Usuário ou senha incorretos." });
-  }
-
-  const token = crypto.randomBytes(32).toString("hex");
-  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
-  sessions.set(token, { userId: user.id, expiresAt });
-  saveSessions(sessions);
-
-  return res.json({
-    success: true,
-    user: formatSafeUser(user),
-    token,
-    message: `Bem-vindo, ${user.name}!`
+  const [formName, setFormName] = useState<string>('');
+  const [formUsername, setFormUsername] = useState<string>('');
+  const [formEmail, setFormEmail] = useState<string>('');
+  const [formPassword, setFormPassword] = useState<string>('');
+  const [formRole, setFormRole] = useState<'UsuarioComum' | 'AdminRevenda' | 'AdminMaster'>('UsuarioComum');
+  const [formExpirationDate, setFormExpirationDate] = useState<string>(() => {
+    const d = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    return d.toISOString().split('T')[0];
   });
-});
+  const [formPlaylistUrl, setFormPlaylistUrl] = useState<string>('');
+  const [formPlaylistName, setFormPlaylistName] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [isSubmittingNewUser, setIsSubmittingNewUser] = useState<boolean>(false);
+  const [lastCreatedUser, setLastCreatedUser] = useState<{ username: string; password: string; name: string; role: string; expirationDate: string | null } | null>(null);
+  const [copiedCredentials, setCopiedCredentials] = useState<boolean>(false);
 
-app.post("/api/auth/register", (req, res) => {
-  const { username, password, name, email } = req.body;
+  const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
+  const [editName, setEditName] = useState<string>('');
+  const [editUsername, setEditUsername] = useState<string>('');
+  const [editEmail, setEditEmail] = useState<string>('');
+  const [editRole, setEditRole] = useState<'UsuarioComum' | 'AdminRevenda' | 'AdminMaster'>('UsuarioComum');
+  const [editExpirationDate, setEditExpirationDate] = useState<string>('');
+  const [editPassword, setEditPassword] = useState<string>('');
+  const [editPlaylistUrl, setEditPlaylistUrl] = useState<string>('');
+  const [editPlaylistName, setEditPlaylistName] = useState<string>('');
+  const [editShowPassword, setEditShowPassword] = useState<boolean>(false);
+  const [editIsBlocked, setEditIsBlocked] = useState<boolean>(false);
+  const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
 
-  const settings = loadSettings();
-  if (!settings.allowPublicRegistration) {
-    return res.status(403).json({
-      success: false,
-      error: "O cadastro de novos usuários está temporariamente desativado pelo administrador."
-    });
-  }
+  const [renewingUser, setRenewingUser] = useState<UserAccount | null>(null);
+  const [renewCustomDate, setRenewCustomDate] = useState<string>('');
+  const [isRenewing, setIsRenewing] = useState<boolean>(false);
 
-  if (!username || typeof username !== "string" || username.trim().length < 3) {
-    return res.status(400).json({ success: false, error: "O nome de usuário deve ter pelo menos 3 caracteres." });
-  }
-  if (!password || typeof password !== "string" || password.length < 4) {
-    return res.status(400).json({ success: false, error: "A senha deve ter pelo menos 4 caracteres." });
-  }
-
-  const cleanUsername = username.trim().toLowerCase();
-  const cleanName = (name && typeof name === "string" && name.trim().length >= 2) ? name.trim() : username.trim();
-
-  const users = loadUsers();
-  const existing = users.find(u => u.username.toLowerCase() === cleanUsername);
-  if (existing) {
-    return res.status(409).json({ success: false, error: "Este nome de usuário já está em uso. Escolha outro." });
-  }
-
-  const trialDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-  const salt = crypto.randomBytes(16).toString("hex");
-  const passwordHash = hashPassword(password, salt);
-  const newUser: StoredUser = {
-    id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-    username: cleanUsername,
-    name: cleanName,
-    email: email && typeof email === "string" ? email.trim() : undefined,
-    passwordHash,
-    salt,
-    role: "UsuarioComum",
-    createdAt: new Date().toISOString(),
-    isBlocked: false,
-    expirationDate: trialDate,
+  const getAuthToken = () => {
+    return localStorage.getItem('iptv_auth_token') || sessionStorage.getItem('iptv_auth_token') || '';
   };
 
-  users.push(newUser);
-  saveUsers(users);
-
-  const token = crypto.randomBytes(32).toString("hex");
-  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
-  sessions.set(token, { userId: newUser.id, expiresAt });
-  saveSessions(sessions);
-
-  return res.status(201).json({
-    success: true,
-    user: formatSafeUser(newUser),
-    token,
-    message: "Conta criada e autenticada com sucesso!"
-  });
-});
-
-app.get("/api/auth/me", (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.query.token as string);
-
-  if (!token) {
-    return res.status(401).json({ success: false, error: "Token não fornecido." });
-  }
-
-  if (token === "token_local_admin") {
-    const users = loadUsers();
-    const admin = users.find(u => normalizeRole(u.role) === "AdminMaster" && !u.isBlocked);
-    if (admin) {
-      return res.json({
-        success: true,
-        user: formatSafeUser(admin)
+  const fetchUsers = async () => {
+    setLoading(true);
+    try {
+      const token = getAuthToken();
+      const res = await fetch('/api/admin/users', {
+        headers: { Authorization: `Bearer ${token}` },
       });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.users)) {
+        setUsers(data.users);
+        if (data.settings && typeof data.settings.allowPublicRegistration === 'boolean') {
+          setAllowRegistration(data.settings.allowPublicRegistration);
+        }
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao carregar lista de usuários.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Erro de comunicação ao carregar usuários.' });
+    } finally {
+      setLoading(false);
     }
-  }
-
-  const session = sessions.get(token);
-  if (!session || session.expiresAt < Date.now()) {
-    if (session) {
-      sessions.delete(token);
-      saveSessions(sessions);
-    }
-    return res.status(401).json({ success: false, error: "Sessão expirada ou inválida." });
-  }
-
-  const users = loadUsers();
-  const user = users.find(u => u.id === session.userId);
-  if (!user) {
-    return res.status(401).json({ success: false, error: "Usuário não encontrado." });
-  }
-
-  if (user.isBlocked) {
-    sessions.delete(token);
-    saveSessions(sessions);
-    return res.status(403).json({ success: false, error: "Sua conta foi bloqueada pelo administrador." });
-  }
-
-  const role = normalizeRole(user.role);
-  if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
-    sessions.delete(token);
-    saveSessions(sessions);
-    return res.status(403).json({
-      success: false,
-      isExpired: true,
-      expirationDate: user.expirationDate,
-      error: `Seu acesso venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com seu revendedor ou suporte para renovar o acesso.`
-    });
-  }
-
-  return res.json({
-    success: true,
-    user: formatSafeUser(user)
-  });
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.body?.token as string);
-  if (token) {
-    sessions.delete(token);
-    saveSessions(sessions);
-  }
-  return res.json({ success: true, message: "Desconectado com sucesso." });
-});
-
-// ----------------------------------------------------
-// User Saved Playlist Endpoints
-// ----------------------------------------------------
-
-app.get("/api/user/playlist", (req, res) => {
-  const { user, error } = getAuthenticatedUser(req);
-  if (error || !user) {
-    return res.status(401).json({ success: false, error: error || "Não autenticado." });
-  }
-
-  return res.json({
-    success: true,
-    playlistUrl: user.playlistUrl || null,
-    playlistName: user.playlistName || null,
-    playlistUpdatedAt: user.playlistUpdatedAt || null,
-  });
-});
-
-app.post("/api/user/playlist", (req, res) => {
-  const { user, error } = getAuthenticatedUser(req);
-  if (error || !user) {
-    return res.status(401).json({ success: false, error: error || "Não autenticado." });
-  }
-
-  const { playlistUrl, playlistName } = req.body;
-  const cleanUrl = typeof playlistUrl === "string" ? playlistUrl.trim() : "";
-  const cleanName = typeof playlistName === "string" && playlistName.trim() ? playlistName.trim() : "Minha Lista IPTV";
-
-  if (!cleanUrl) {
-    return res.status(400).json({ success: false, error: "A URL da lista M3U é obrigatória." });
-  }
-
-  const users = loadUsers();
-  const index = users.findIndex(u => u.id === user.id);
-  if (index === -1) {
-    return res.status(404).json({ success: false, error: "Usuário não localizado para salvar a lista." });
-  }
-
-  users[index].playlistUrl = cleanUrl;
-  users[index].playlistName = cleanName;
-  users[index].playlistUpdatedAt = new Date().toISOString();
-  saveUsers(users);
-
-  return res.json({
-    success: true,
-    message: "Lista M3U salva com sucesso na sua conta!",
-    user: formatSafeUser(users[index]),
-  });
-});
-
-app.delete("/api/user/playlist", (req, res) => {
-  const { user, error } = getAuthenticatedUser(req);
-  if (error || !user) {
-    return res.status(401).json({ success: false, error: error || "Não autenticado." });
-  }
-
-  const users = loadUsers();
-  const index = users.findIndex(u => u.id === user.id);
-  if (index !== -1) {
-    users[index].playlistUrl = undefined;
-    users[index].playlistName = undefined;
-    users[index].playlistUpdatedAt = undefined;
-    saveUsers(users);
-  }
-
-  return res.json({
-    success: true,
-    message: "Lista M3U desvinculada da sua conta com sucesso.",
-    user: index !== -1 ? formatSafeUser(users[index]) : undefined,
-  });
-});
-
-// ----------------------------------------------------
-// Admin Management Endpoints
-// ----------------------------------------------------
-
-app.get("/api/admin/users", (req, res) => {
-  const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
-
-  const users = loadUsers();
-  const settings = loadSettings();
-
-  return res.json({
-    success: true,
-    users: users.map(formatSafeUser),
-    currentAdminRole: normalizeRole(adminUser.role),
-    isMaster,
-    isRevenda,
-    settings,
-  });
-});
-
-app.post("/api/admin/users", (req, res) => {
-  const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
-
-  const { username, password, name, email, role, playlistUrl, playlistName, expirationDate } = req.body;
-
-  if (!username || typeof username !== "string" || username.trim().length < 3) {
-    return res.status(400).json({ success: false, error: "O nome de usuário deve ter pelo menos 3 caracteres." });
-  }
-
-  if (!password || typeof password !== "string" || password.length < 4) {
-    return res.status(400).json({ success: false, error: "A senha deve ter pelo menos 4 caracteres." });
-  }
-
-  const cleanUsername = username.trim().toLowerCase();
-  const cleanName = (name && typeof name === "string" && name.trim().length >= 2) ? name.trim() : username.trim();
-
-  let assignedRole: 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum';
-  if (isRevenda) {
-    if (role && normalizeRole(role) !== "UsuarioComum") {
-      return res.status(403).json({
-        success: false,
-        error: "AdminRevenda só tem permissão para adicionar Usuário Comum."
-      });
-    }
-    assignedRole = "UsuarioComum";
-  } else {
-    assignedRole = normalizeRole(role);
-  }
-
-  const cleanPlaylistUrl = typeof playlistUrl === "string" && playlistUrl.trim() ? playlistUrl.trim() : undefined;
-  const cleanPlaylistName = typeof playlistName === "string" && playlistName.trim() ? playlistName.trim() : (cleanPlaylistUrl ? "Lista IPTV" : undefined);
-  const cleanExpirationDate = expirationDate && typeof expirationDate === "string" && expirationDate.trim() && expirationDate.trim() !== "vitalicio"
-    ? expirationDate.trim()
-    : null;
-
-  const users = loadUsers();
-  const existing = users.find(u => u.username.toLowerCase() === cleanUsername);
-  if (existing) {
-    return res.status(409).json({ success: false, error: `O usuário @${cleanUsername} já existe no sistema.` });
-  }
-
-  const salt = crypto.randomBytes(16).toString("hex");
-  const passwordHash = hashPassword(password, salt);
-  const newUser: StoredUser = {
-    id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-    username: cleanUsername,
-    name: cleanName,
-    email: email && typeof email === "string" && email.trim() ? email.trim() : undefined,
-    passwordHash,
-    salt,
-    role: assignedRole,
-    createdAt: new Date().toISOString(),
-    isBlocked: false,
-    playlistUrl: cleanPlaylistUrl,
-    playlistName: cleanPlaylistName,
-    playlistUpdatedAt: cleanPlaylistUrl ? new Date().toISOString() : undefined,
-    expirationDate: cleanExpirationDate,
-    createdBy: adminUser.username,
-    createdByName: adminUser.name,
   };
 
-  users.push(newUser);
-  saveUsers(users);
-
-  return res.status(201).json({
-    success: true,
-    message: `Usuário @${cleanUsername} criado com sucesso como ${assignedRole}!`,
-    newUser: formatSafeUser(newUser),
-    users: users.map(formatSafeUser),
-  });
-});
-
-app.post("/api/admin/users/:id/toggle-block", (req, res) => {
-  const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
-
-  const targetId = req.params.id;
-  if (targetId === adminUser.id) {
-    return res.status(400).json({ success: false, error: "Você não pode bloquear a sua própria conta." });
-  }
-
-  const users = loadUsers();
-  const targetIndex = users.findIndex(u => u.id === targetId);
-  if (targetIndex === -1) {
-    return res.status(404).json({ success: false, error: "Usuário não encontrado." });
-  }
-
-  const targetRole = normalizeRole(users[targetIndex].role);
-
-  if (targetRole === "AdminMaster") {
-    return res.status(400).json({ success: false, error: "Não é permitido bloquear a conta do AdminMaster." });
-  }
-
-  if (isRevenda && targetRole !== "UsuarioComum") {
-    return res.status(403).json({
-      success: false,
-      error: "AdminRevenda só tem permissão para gerenciar Usuários Comuns."
-    });
-  }
-
-  const nowBlocked = !users[targetIndex].isBlocked;
-  users[targetIndex].isBlocked = nowBlocked;
-  saveUsers(users);
-
-  if (nowBlocked) {
-    for (const [token, session] of sessions.entries()) {
-      if (session.userId === targetId) {
-        sessions.delete(token);
-      }
+  useEffect(() => {
+    if (isOpen) {
+      fetchUsers();
+      setFeedbackMsg(null);
+      setPendingDeleteId(null);
     }
-    saveSessions(sessions);
-  }
+  }, [isOpen]);
 
-  return res.json({
-    success: true,
-    message: nowBlocked
-      ? `Usuário @${users[targetIndex].username} foi bloqueado com sucesso.`
-      : `Usuário @${users[targetIndex].username} foi desbloqueado com sucesso.`,
-    users: users.map(formatSafeUser),
-  });
-});
-
-app.put("/api/admin/users/:id", (req, res) => {
-  const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
-
-  const targetId = req.params.id;
-  const { name, username, email, role, password, isBlocked, playlistUrl, playlistName, expirationDate } = req.body;
-
-  const users = loadUsers();
-  const targetIndex = users.findIndex(u => u.id === targetId);
-  if (targetIndex === -1) {
-    return res.status(404).json({ success: false, error: "Usuário não encontrado." });
-  }
-
-  const currentUser = users[targetIndex];
-  const targetRole = normalizeRole(currentUser.role);
-
-  if (targetRole === "AdminMaster" && !isMaster) {
-    return res.status(403).json({ success: false, error: "Você não tem permissão para alterar contas de AdminMaster." });
-  }
-
-  if (targetRole === "AdminRevenda" && isRevenda && targetId !== adminUser.id) {
-    return res.status(403).json({ success: false, error: "AdminRevenda não pode alterar dados de outros revendedores." });
-  }
-
-  if (isRevenda && role !== undefined && normalizeRole(role) !== "UsuarioComum") {
-    return res.status(403).json({ success: false, error: "AdminRevenda não tem permissão para alterar cargos ou promover usuários." });
-  }
-
-  if (username && typeof username === "string") {
-    const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, "");
-    if (cleanUsername.length < 3) {
-      return res.status(400).json({ success: false, error: "O nome de usuário deve ter pelo menos 3 caracteres." });
+  const handleGeneratePassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let generated = '';
+    for (let i = 0; i < 8; i++) {
+      generated += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    const duplicate = users.find(u => u.id !== targetId && u.username.toLowerCase() === cleanUsername);
-    if (duplicate) {
-      return res.status(409).json({ success: false, error: `O nome de usuário @${cleanUsername} já está sendo utilizado.` });
-    }
-    currentUser.username = cleanUsername;
-  }
+    setFormPassword(generated);
+    setShowPassword(true);
+  };
 
-  if (name && typeof name === "string" && name.trim().length > 0) {
-    currentUser.name = name.trim();
-  }
+  const handleSetFormExpirationDays = (days: number) => {
+    const d = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    setFormExpirationDate(d.toISOString().split('T')[0]);
+  };
 
-  if (email !== undefined) {
-    currentUser.email = typeof email === "string" && email.trim().length > 0 ? email.trim() : undefined;
-  }
-
-  if (role !== undefined && isMaster) {
-    const normalizedNewRole = normalizeRole(role);
-    if (targetId === adminUser.id && normalizedNewRole !== "AdminMaster") {
-      return res.status(400).json({ success: false, error: "Você não pode remover seu próprio privilégio de AdminMaster." });
-    }
-    currentUser.role = normalizedNewRole;
-  }
-
-  if (expirationDate !== undefined) {
-    if (!expirationDate || expirationDate === "vitalicio" || String(expirationDate).trim() === "") {
-      currentUser.expirationDate = null;
-    } else {
-      currentUser.expirationDate = String(expirationDate).trim();
-    }
-  }
-
-  if (typeof isBlocked === "boolean") {
-    if (targetId === adminUser.id && isBlocked) {
-      return res.status(400).json({ success: false, error: "Você não pode bloquear a sua própria conta." });
-    }
-    currentUser.isBlocked = isBlocked;
-    if (isBlocked) {
-      for (const [token, session] of sessions.entries()) {
-        if (session.userId === targetId) {
-          sessions.delete(token);
-        }
-      }
-      saveSessions(sessions);
-    }
-  }
-
-  if (password && typeof password === "string" && password.trim().length > 0) {
-    if (password.trim().length < 4) {
-      return res.status(400).json({ success: false, error: "A nova senha deve ter no mínimo 4 caracteres." });
-    }
-    const newSalt = crypto.randomBytes(16).toString("hex");
-    currentUser.salt = newSalt;
-    currentUser.passwordHash = hashPassword(password.trim(), newSalt);
-  }
-
-  if (playlistUrl !== undefined) {
-    const cleanUrl = typeof playlistUrl === "string" && playlistUrl.trim() ? playlistUrl.trim() : undefined;
-    currentUser.playlistUrl = cleanUrl;
-    currentUser.playlistUpdatedAt = cleanUrl ? new Date().toISOString() : undefined;
-  }
-  if (playlistName !== undefined) {
-    currentUser.playlistName = typeof playlistName === "string" && playlistName.trim() ? playlistName.trim() : (currentUser.playlistUrl ? "Lista IPTV" : undefined);
-  }
-
-  users[targetIndex] = currentUser;
-  saveUsers(users);
-
-  return res.json({
-    success: true,
-    message: `Dados do usuário @${currentUser.username} atualizados com sucesso!`,
-    user: formatSafeUser(currentUser),
-    users: users.map(formatSafeUser),
-  });
-});
-
-app.post("/api/admin/users/:id/renew", (req, res) => {
-  const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
-
-  const targetId = req.params.id;
-  const users = loadUsers();
-  const targetIndex = users.findIndex(u => u.id === targetId);
-  if (targetIndex === -1) {
-    return res.status(404).json({ success: false, error: "Usuário não encontrado." });
-  }
-
-  const currentUser = users[targetIndex];
-  const targetRole = normalizeRole(currentUser.role);
-
-  if (isRevenda && targetRole !== "UsuarioComum") {
-    return res.status(403).json({ success: false, error: "AdminRevenda só pode renovar o vencimento de Usuários Comuns." });
-  }
-
-  const { days, newExpirationDate } = req.body;
-
-  let finalDateStr: string | null = null;
-  if (newExpirationDate !== undefined) {
-    finalDateStr = (!newExpirationDate || newExpirationDate === "vitalicio") ? null : String(newExpirationDate).trim();
-  } else if (typeof days === "number" && days > 0) {
+  const handleSetEditExpirationDays = (days: number) => {
     let baseTime = Date.now();
-    if (currentUser.expirationDate && !isDateExpired(currentUser.expirationDate)) {
-      const existingTime = new Date(`${currentUser.expirationDate.slice(0, 10)}T23:59:59`).getTime();
-      if (!isNaN(existingTime) && existingTime > Date.now()) {
-        baseTime = existingTime;
+    if (editExpirationDate) {
+      const existing = new Date(`${editExpirationDate.slice(0, 10)}T23:59:59`).getTime();
+      if (!isNaN(existing) && existing > Date.now()) {
+        baseTime = existing;
       }
     }
-    const newTime = baseTime + days * 24 * 60 * 60 * 1000;
-    finalDateStr = new Date(newTime).toISOString().split('T')[0];
-  } else {
-    return res.status(400).json({ success: false, error: "Informe a quantidade de dias ou a nova data de vencimento." });
-  }
+    const d = new Date(baseTime + days * 24 * 60 * 60 * 1000);
+    setEditExpirationDate(d.toISOString().split('T')[0]);
+  };
 
-  currentUser.expirationDate = finalDateStr;
-  users[targetIndex] = currentUser;
-  saveUsers(users);
+  const handleCreateUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFeedbackMsg(null);
 
-  const displayMsg = finalDateStr
-    ? `Acesso de @${currentUser.username} renovado até ${formatDateBR(finalDateStr)} com sucesso!`
-    : `Acesso de @${currentUser.username} definido como Vitalício / Ilimitado!`;
-
-  return res.json({
-    success: true,
-    message: displayMsg,
-    user: formatSafeUser(currentUser),
-    users: users.map(formatSafeUser),
-  });
-});
-
-app.delete("/api/admin/users/:id", (req, res) => {
-  const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
-
-  const targetId = req.params.id;
-  if (targetId === adminUser.id) {
-    return res.status(400).json({ success: false, error: "Você não pode excluir a sua própria conta de administrador." });
-  }
-
-  let users = loadUsers();
-  const target = users.find(u => u.id === targetId);
-  if (!target) {
-    return res.status(404).json({ success: false, error: "Usuário não encontrado." });
-  }
-
-  const targetRole = normalizeRole(target.role);
-
-  if (targetRole === "AdminMaster") {
-    return res.status(400).json({ success: false, error: "Não é permitido excluir a conta do AdminMaster principal." });
-  }
-
-  if (isRevenda && targetRole !== "UsuarioComum") {
-    return res.status(403).json({
-      success: false,
-      error: "AdminRevenda não tem permissão para remover revendedores. Apenas o AdminMaster pode remover contas de revenda."
-    });
-  }
-
-  users = users.filter(u => u.id !== targetId);
-  saveUsers(users);
-
-  for (const [token, session] of sessions.entries()) {
-    if (session.userId === targetId) {
-      sessions.delete(token);
+    const cleanUsername = formUsername.trim().toLowerCase().replace(/\s+/g, '');
+    if (cleanUsername.length < 3) {
+      setFeedbackMsg({ type: 'error', text: 'O nome de usuário deve ter pelo menos 3 caracteres.' });
+      return;
     }
-  }
-  saveSessions(sessions);
-
-  return res.json({
-    success: true,
-    message: `Conta @${target.username} (${targetRole}) excluída com sucesso.`,
-    users: users.map(formatSafeUser),
-  });
-});
-
-app.post("/api/admin/settings", (req, res) => {
-  const { adminUser, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
-
-  const { allowPublicRegistration } = req.body;
-  const settings = loadSettings();
-
-  if (typeof allowPublicRegistration === "boolean") {
-    settings.allowPublicRegistration = allowPublicRegistration;
-    saveSettings(settings);
-  }
-
-  return res.json({
-    success: true,
-    settings,
-    message: settings.allowPublicRegistration
-      ? "Novos cadastros públicos estão permitidos."
-      : "Novos cadastros públicos foram desativados."
-  });
-});
-
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok" });
-});
-
-interface ParsedChannel {
-  id: string;
-  name: string;
-  streamUrl: string;
-  logoUrl?: string;
-  groupTitle?: string;
-  tvgId?: string;
-  tvgName?: string;
-}
-
-interface ChannelGroup {
-  name: string;
-  count: number;
-}
-
-function extractXtreamCredentials(urlStr: string) {
-  try {
-    const parsed = new URL(urlStr);
-    const username = parsed.searchParams.get("username");
-    const password = parsed.searchParams.get("password");
-    if (username && password) {
-      const baseUrl = `${parsed.protocol}//${parsed.host}`;
-      return { baseUrl, username, password };
+    if (formPassword.length < 4) {
+      setFeedbackMsg({ type: 'error', text: 'A senha deve ter no mínimo 4 caracteres.' });
+      return;
     }
-  } catch {
-  }
-  return null;
-}
 
-app.post("/api/load-playlist", async (req, res) => {
-  const { 
-    url, 
-    maxChannels = 0,
-    preferFormat = "m3u8",
-    mode = "all",
-    includeVod = true
-  } = req.body;
+    const assignedRole = isRevenda ? 'UsuarioComum' : formRole;
 
-  if (!url || typeof url !== "string") {
-    return res.status(400).json({ error: "URL inválida ou ausente." });
-  }
+    setIsSubmittingNewUser(true);
 
-  const trimmedUrl = url.trim();
-  const effectiveMax = (typeof maxChannels === "number" && maxChannels > 0) ? maxChannels : 100000;
-
-  const xtream = extractXtreamCredentials(trimmedUrl);
-  
-  if (xtream && mode === "live") {
     try {
-      console.log(`[Xtream API] Carregando canais ao vivo de ${xtream.baseUrl} para o usuário ${xtream.username}...`);
-      
-      const [catsRes, streamsRes] = await Promise.all([
-        fetch(`${xtream.baseUrl}/player_api.php?username=${xtream.username}&password=${xtream.password}&action=get_live_categories`, {
-          headers: { "User-Agent": "IPTVSmartersPlayer" },
-          signal: AbortSignal.timeout(20000),
+      const token = getAuthToken();
+      const res = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: formName.trim() || cleanUsername,
+          username: cleanUsername,
+          email: formEmail.trim() || undefined,
+          password: formPassword,
+          role: assignedRole,
+          expirationDate: formExpirationDate ? formExpirationDate : null,
+          playlistUrl: formPlaylistUrl.trim() || undefined,
+          playlistName: formPlaylistName.trim() || undefined,
         }),
-        fetch(`${xtream.baseUrl}/player_api.php?username=${xtream.username}&password=${xtream.password}&action=get_live_streams`, {
-          headers: { "User-Agent": "IPTVSmartersPlayer" },
-          signal: AbortSignal.timeout(30000),
-        })
-      ]);
-
-      if (catsRes.ok && streamsRes.ok) {
-        const categoriesData = await catsRes.json() as Array<{ category_id: string; category_name: string }>;
-        const streamsData = await streamsRes.json() as Array<any>;
-
-        if (Array.isArray(streamsData) && streamsData.length > 0) {
-          const catMap = new Map<string, string>();
-          if (Array.isArray(categoriesData)) {
-            categoriesData.forEach(c => catMap.set(String(c.category_id), c.category_name));
-          }
-
-          const channels: ParsedChannel[] = [];
-          const groupCountMap = new Map<string, number>();
-
-          for (const s of streamsData) {
-            const group = catMap.get(String(s.category_id)) || "CANAIS AO VIVO";
-            const channelId = `xtream_${s.stream_id || channels.length + 1}`;
-            
-            const ext = preferFormat === "m3u8" ? "m3u8" : "ts";
-            const base = xtream.baseUrl.replace(/\/+$/, "");
-            const directStreamUrl = `${base}/${xtream.username}/${xtream.password}/${s.stream_id}.${ext}`;
-
-            channels.push({
-              id: channelId,
-              name: s.name || `Canal ${s.stream_id}`,
-              streamUrl: directStreamUrl,
-              logoUrl: s.stream_icon || "",
-              groupTitle: group,
-              tvgId: s.epg_channel_id || String(s.stream_id),
-              tvgName: s.name || "",
-            });
-
-            groupCountMap.set(group, (groupCountMap.get(group) || 0) + 1);
-
-            if (channels.length >= effectiveMax) break;
-          }
-
-          const groups: ChannelGroup[] = Array.from(groupCountMap.entries()).map(([name, count]) => ({
-            name,
-            count
-          })).sort((a, b) => b.count - a.count);
-
-          return res.json({
-            success: true,
-            source: "xtream_codes_api",
-            totalLiveChannels: streamsData.length,
-            loadedCount: channels.length,
-            message: `Carregados todos os ${channels.length} canais de TV ao vivo com sucesso via API Xtream!`,
-            channels,
-            groups
-          });
-        }
-      }
-    } catch (e: any) {
-      console.warn(`[Xtream API fallback] Erro na API Xtream (${e.message}), tentando leitura por streaming M3U completo...`);
-    }
-  }
-
-  try {
-    console.log(`[M3U Streaming] Baixando e processando M3U completa (mode: ${mode}, max: ${effectiveMax}): ${trimmedUrl}`);
-    const response = await fetch(trimmedUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 IPTVSmarters"
-      },
-      signal: AbortSignal.timeout(90000)
-    });
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: `O servidor da lista retornou status HTTP ${response.status}: ${response.statusText}`
       });
-    }
 
-    if (!response.body) {
-      return res.status(400).json({ error: "Resposta da lista vazia." });
-    }
+      const data = await res.json();
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
-    let currentMetadata: {
-      name: string;
-      logo?: string;
-      group?: string;
-      tvgId?: string;
-      tvgName?: string;
-    } | null = null;
+      if (res.ok && data.success && data.users) {
+        setUsers(data.users);
+        setLastCreatedUser({
+          username: cleanUsername,
+          password: formPassword,
+          name: formName.trim() || cleanUsername,
+          role: assignedRole,
+          expirationDate: formExpirationDate || null,
+        });
+        setFeedbackMsg({
+          type: 'success',
+          text: `Usuário @${cleanUsername} (${assignedRole}) cadastrado com sucesso!`,
+        });
 
-    const channels: ParsedChannel[] = [];
-    const groupCountMap = new Map<string, number>();
-
-    let countLive = 0;
-    let countMovies = 0;
-    let countSeries = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (value) {
-        buffer += decoder.decode(value, { stream: !done });
+        setFormName('');
+        setFormUsername('');
+        setFormEmail('');
+        setFormPassword('');
+        setFormRole('UsuarioComum');
+        const defaultNextMonth = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        setFormExpirationDate(defaultNextMonth);
+        setFormPlaylistUrl('');
+        setFormPlaylistName('');
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao cadastrar novo usuário.' });
       }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha de comunicação ao cadastrar usuário.' });
+    } finally {
+      setIsSubmittingNewUser(false);
+    }
+  };
 
-      const lines = buffer.split(/\r?\n/);
-      buffer = done ? "" : (lines.pop() || "");
+  const handleCopyLastCreated = () => {
+    if (!lastCreatedUser) return;
+    const expText = lastCreatedUser.expirationDate 
+      ? formatDateDisplay(lastCreatedUser.expirationDate)
+      : 'Vitalício / Sem Vencimento';
+    const textToCopy = `🔐 *Acesso IPTV Player*\n👤 Usuário: ${lastCreatedUser.username}\n🔑 Senha: ${lastCreatedUser.password}\n📅 Vencimento: ${expText}\nCargo: ${lastCreatedUser.role}`;
+    navigator.clipboard.writeText(textToCopy);
+    setCopiedCredentials(true);
+    setTimeout(() => setCopiedCredentials(false), 2500);
+  };
 
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) continue;
+  const handleToggleBlock = async (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
 
-        if (line.startsWith("#EXTINF:")) {
-          const tvgIdMatch = line.match(/tvg-id="([^"]*)"/i);
-          const tvgNameMatch = line.match(/tvg-name="([^"]*)"/i);
-          const tvgLogoMatch = line.match(/tvg-logo="([^"]*)"/i);
-          const groupTitleMatch = line.match(/group-title="([^"]*)"/i);
-
-          const commaIdx = line.lastIndexOf(",");
-          const displayName = commaIdx !== -1 ? line.substring(commaIdx + 1).trim() : (tvgNameMatch ? tvgNameMatch[1] : "Sem Nome");
-
-          currentMetadata = {
-            name: displayName || "Canal Desconhecido",
-            logo: tvgLogoMatch ? tvgLogoMatch[1] : undefined,
-            group: groupTitleMatch ? groupTitleMatch[1].trim() : "Geral",
-            tvgId: tvgIdMatch ? tvgIdMatch[1] : undefined,
-            tvgName: tvgNameMatch ? tvgNameMatch[1] : undefined,
-          };
-        } else if (!line.startsWith("#") && currentMetadata) {
-          const streamUrl = line;
-          const upperGroup = (currentMetadata.group || "").toUpperCase();
-          const upperUrl = streamUrl.toUpperCase();
-
-          const isMovie = upperUrl.includes("/MOVIE/") || upperGroup.includes("FILME") || upperGroup.includes("CINEMA") || upperGroup.includes("VOD") || upperUrl.endsWith(".MP4") || upperUrl.endsWith(".MKV");
-          const isSerie = upperUrl.includes("/SERIES/") || upperGroup.includes("SERIE") || upperGroup.includes("TEMPORADA") || upperGroup.includes("NOVELA");
-          const isVod = isMovie || isSerie;
-
-          let shouldInclude = true;
-          if (mode === "live" && isVod) {
-            shouldInclude = false;
-          } else if (mode === "vod" && !isVod) {
-            shouldInclude = false;
-          }
-
-          if (shouldInclude) {
-            const groupName = currentMetadata.group || "Geral";
-            channels.push({
-              id: `m3u_${channels.length + 1}`,
-              name: currentMetadata.name,
-              streamUrl,
-              logoUrl: currentMetadata.logo,
-              groupTitle: groupName,
-              tvgId: currentMetadata.tvgId,
-              tvgName: currentMetadata.tvgName,
-            });
-
-            if (isMovie) countMovies++;
-            else if (isSerie) countSeries++;
-            else countLive++;
-
-            groupCountMap.set(groupName, (groupCountMap.get(groupName) || 0) + 1);
-
-            if (channels.length >= effectiveMax) {
-              break;
-            }
-          }
-
-          currentMetadata = null;
-        }
-      }
-
-      if (done || channels.length >= effectiveMax) {
-        break;
-      }
+    if (user.id === currentAdmin.id) {
+      setFeedbackMsg({ type: 'error', text: 'Você não pode bloquear a sua própria conta.' });
+      return;
     }
 
-    const groups: ChannelGroup[] = Array.from(groupCountMap.entries()).map(([name, count]) => ({
-      name,
-      count
-    })).sort((a, b) => b.count - a.count);
-
-    if (channels.length === 0) {
-      return res.status(400).json({ error: "Nenhum canal ou stream válido pôde ser extraído da lista." });
+    if (targetRole === 'AdminMaster') {
+      setFeedbackMsg({ type: 'error', text: 'Não é permitido bloquear a conta do AdminMaster.' });
+      return;
     }
 
-    return res.json({
-      success: true,
-      source: "m3u_stream",
-      loadedCount: channels.length,
-      stats: {
-        live: countLive,
-        movies: countMovies,
-        series: countSeries,
-        total: channels.length
-      },
-      message: `Lista inteira carregada com sucesso! ${channels.length} itens totais (${countLive} canais ao vivo, ${countMovies} filmes e ${countSeries} séries).`,
-      channels,
-      groups
-    });
-
-  } catch (err: any) {
-    console.error("[M3U Load Error]", err);
-    return res.status(500).json({
-      error: `Falha ao processar a lista: ${err.message}. Verifique a conexão com o provedor.`
-    });
-  }
-});
-
-// ----------------------------------------------------
-// Smart On-Demand Xtream Codes Engine
-// ----------------------------------------------------
-
-interface XtreamCacheItem {
-  timestamp: number;
-  data: any;
-}
-
-const xtreamMemoryCache = new Map<string, XtreamCacheItem>();
-const CACHE_TTL_MS = 15 * 60 * 1000;
-
-function getFromXtreamCache<T>(key: string): T | null {
-  const item = xtreamMemoryCache.get(key);
-  if (!item) return null;
-  if (Date.now() - item.timestamp > CACHE_TTL_MS) {
-    xtreamMemoryCache.delete(key);
-    return null;
-  }
-  return item.data as T;
-}
-
-function setInXtreamCache(key: string, data: any) {
-  if (xtreamMemoryCache.size > 500) {
-    const firstKey = xtreamMemoryCache.keys().next().value;
-    if (firstKey) xtreamMemoryCache.delete(firstKey);
-  }
-  xtreamMemoryCache.set(key, { timestamp: Date.now(), data });
-}
-
-function parseXtreamCredentialsFromReq(body: any) {
-  const { url, server, username, password } = body;
-  if (server && username && password) {
-    return {
-      baseUrl: server.trim().replace(/\/+$/, ''),
-      username: username.trim(),
-      password: password.trim(),
-    };
-  }
-  if (url && typeof url === 'string') {
-    return extractXtreamCredentials(url.trim());
-  }
-  return null;
-}
-
-app.post("/api/xtream/categories", async (req, res) => {
-  const xtream = parseXtreamCredentialsFromReq(req.body);
-  if (!xtream) {
-    return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
-  }
-
-  const type = (req.body.type || "live") as "live" | "vod" | "series";
-  let action = "get_live_categories";
-  if (type === "vod") action = "get_vod_categories";
-  if (type === "series") action = "get_series_categories";
-
-  const cacheKey = `cats_${xtream.baseUrl}_${xtream.username}_${type}`;
-  const cached = getFromXtreamCache<any[]>(cacheKey);
-  if (cached) {
-    return res.json({ success: true, source: "cache", type, categories: cached });
-  }
-
-  try {
-    const fetchUrl = `${xtream.baseUrl}/player_api.php?username=${xtream.username}&password=${xtream.password}&action=${action}`;
-    const response = await fetch(fetchUrl, {
-      headers: { "User-Agent": "IPTVSmartersPlayer/3.1.5 (Linux;Android 12)" },
-      signal: AbortSignal.timeout(15000),
-    });
-
-    if (!response.ok) {
-      return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
+    if (isRevenda && targetRole !== 'UsuarioComum') {
+      setFeedbackMsg({ type: 'error', text: 'AdminRevenda só tem permissão para gerenciar Usuários Comuns.' });
+      return;
     }
 
-    const data = await response.json();
-    if (!Array.isArray(data)) {
-      return res.status(500).json({ success: false, error: "Resposta inesperada do servidor Xtream." });
-    }
+    const actionName = user.isBlocked ? 'desbloquear' : 'bloquear';
+    setActionLoadingId(user.id);
+    setFeedbackMsg(null);
 
-    const categories = data.map((c: any) => ({
-      id: String(c.category_id),
-      name: c.category_name || `Categoria ${c.category_id}`,
-    }));
-
-    setInXtreamCache(cacheKey, categories);
-    return res.json({ success: true, source: "network", type, categories });
-  } catch (err: any) {
-    console.error("[Xtream Categories Error]", err.message);
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/xtream/streams", async (req, res) => {
-  const xtream = parseXtreamCredentialsFromReq(req.body);
-  if (!xtream) {
-    return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
-  }
-
-  const { type = "live", categoryId, search, preferFormat = "m3u8", page = 1, limit = 100 } = req.body;
-  let action = "get_live_streams";
-  if (type === "vod") action = "get_vod_streams";
-  if (type === "series") action = "get_series";
-
-  const cacheKey = `streams_${xtream.baseUrl}_${xtream.username}_${type}_cat_${categoryId || 'all'}`;
-  let streams = getFromXtreamCache<any[]>(cacheKey);
-
-  if (!streams) {
     try {
-      let fetchUrl = `${xtream.baseUrl}/player_api.php?username=${xtream.username}&password=${xtream.password}&action=${action}`;
-      if (categoryId && categoryId !== "ALL" && categoryId !== "TODOS") {
-        fetchUrl += `&category_id=${encodeURIComponent(categoryId)}`;
-      }
+      const token = getAuthToken();
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}/toggle-block`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` 
+        },
+      });
+      const data = await res.json();
 
-      const response = await fetch(fetchUrl, {
-        headers: { "User-Agent": "IPTVSmartersPlayer/3.1.5 (Linux;Android 12)" },
-        signal: AbortSignal.timeout(25000),
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message });
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || `Erro ao ${actionName} usuário.` });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: `Falha ao tentar ${actionName} usuário.` });
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleOpenEdit = (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
+
+    if (isRevenda && targetRole !== 'UsuarioComum' && user.id !== currentAdmin.id) {
+      setFeedbackMsg({ type: 'error', text: 'AdminRevenda não pode alterar contas de outros revendedores ou administradores.' });
+      return;
+    }
+
+    setEditingUser(user);
+    setEditName(user.name || '');
+    setEditUsername(user.username || '');
+    setEditEmail(user.email || '');
+    setEditRole(targetRole);
+    setEditExpirationDate(user.expirationDate ? user.expirationDate.slice(0, 10) : '');
+    setEditIsBlocked(!!user.isBlocked);
+    setEditPassword('');
+    setEditPlaylistUrl(user.playlistUrl || '');
+    setEditPlaylistName(user.playlistName || '');
+    setEditShowPassword(false);
+    setFeedbackMsg(null);
+  };
+
+  const handleGenerateEditPassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let generated = '';
+    for (let i = 0; i < 8; i++) {
+      generated += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setEditPassword(generated);
+    setEditShowPassword(true);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+
+    const cleanUsername = editUsername.trim().toLowerCase().replace(/\s+/g, '');
+    if (cleanUsername.length < 3) {
+      setFeedbackMsg({ type: 'error', text: 'O nome de usuário deve ter pelo menos 3 caracteres.' });
+      return;
+    }
+
+    if (editPassword && editPassword.trim().length > 0 && editPassword.trim().length < 4) {
+      setFeedbackMsg({ type: 'error', text: 'A nova senha deve ter no mínimo 4 caracteres.' });
+      return;
+    }
+
+    setIsSavingEdit(true);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(editingUser.id)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: editName.trim(),
+          username: cleanUsername,
+          email: editEmail.trim() || undefined,
+          role: isMaster ? editRole : undefined,
+          expirationDate: editExpirationDate ? editExpirationDate : 'vitalicio',
+          password: editPassword.trim() || undefined,
+          isBlocked: editIsBlocked,
+          playlistUrl: editPlaylistUrl.trim() || undefined,
+          playlistName: editPlaylistName.trim() || undefined,
+        }),
       });
 
-      if (!response.ok) {
-        return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
+      const data = await res.json();
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message || 'Dados atualizados com sucesso!' });
+        setEditingUser(null);
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao atualizar dados do usuário.' });
       }
-
-      const data = await response.json();
-      if (!Array.isArray(data)) {
-        return res.status(500).json({ success: false, error: "Formato de lista inválido retornado pelo provedor." });
-      }
-
-      streams = data;
-      setInXtreamCache(cacheKey, streams);
-    } catch (err: any) {
-      console.error("[Xtream Streams Error]", err.message);
-      return res.status(500).json({ success: false, error: err.message });
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha de comunicação ao tentar salvar alterações.' });
+    } finally {
+      setIsSavingEdit(false);
     }
-  }
+  };
 
-  let filtered = streams || [];
-  if (search && typeof search === "string" && search.trim()) {
-    const q = search.trim().toLowerCase();
-    filtered = filtered.filter((s: any) => (s.name && s.name.toLowerCase().includes(q)));
-  }
+  const handleRequestDelete = (user: UserAccount) => {
+    const targetRole = normalizeUserRole(user.role);
 
-  const totalCount = filtered.length;
-  const pageNum = Math.max(1, parseInt(String(page)) || 1);
-  const limitNum = Math.max(1, Math.min(500, parseInt(String(limit)) || 100));
-  const startIndex = (pageNum - 1) * limitNum;
-  const pagedItems = filtered.slice(startIndex, startIndex + limitNum);
-
-  if (type === "live") {
-    const ext = preferFormat === "m3u8" ? "m3u8" : "ts";
-    const formattedChannels = pagedItems.map((s: any) => ({
-      id: `live_${s.stream_id}`,
-      name: s.name || `Canal ${s.stream_id}`,
-      streamUrl: `${xtream.baseUrl}/${xtream.username}/${xtream.password}/${s.stream_id}.${ext}`,
-      logoUrl: s.stream_icon || "",
-      groupTitle: s.category_name || "TV ao Vivo",
-      tvgId: s.epg_channel_id || String(s.stream_id),
-      tvgName: s.name || "",
-      isFavorite: false,
-    }));
-
-    return res.json({
-      success: true,
-      type: "live",
-      categoryId,
-      totalCount,
-      page: pageNum,
-      limit: limitNum,
-      hasMore: startIndex + limitNum < totalCount,
-      items: formattedChannels,
-    });
-  }
-
-  if (type === "vod") {
-    const formattedMovies = pagedItems.map((m: any) => {
-      const ext = m.container_extension || "mp4";
-      return {
-        id: `vod_${m.stream_id}`,
-        title: m.name || "Filme",
-        type: "movie",
-        posterUrl: m.stream_icon || "https://images.unsplash.com/photo-1536440136628-849c177e76a1?auto=format&fit=crop&w=600&q=80",
-        streamUrl: `${xtream.baseUrl}/movie/${xtream.username}/${xtream.password}/${m.stream_id}.${ext}`,
-        rating: m.rating ? parseFloat(m.rating) : 4.5,
-        year: m.year ? parseInt(m.year) : 2024,
-        genre: m.category_name || "Filmes",
-        category: "VOD",
-        synopsis: m.plot || `Filme: ${m.name}`,
-        badge: "HD",
-      };
-    });
-
-    return res.json({
-      success: true,
-      type: "vod",
-      categoryId,
-      totalCount,
-      page: pageNum,
-      limit: limitNum,
-      hasMore: startIndex + limitNum < totalCount,
-      items: formattedMovies,
-    });
-  }
-
-  const formattedSeries = pagedItems.map((s: any) => ({
-    id: `series_${s.series_id}`,
-    seriesId: s.series_id,
-    title: s.name || "Série",
-    type: "series",
-    posterUrl: s.cover || "https://images.unsplash.com/photo-1574375927938-d5a98e8ffe85?auto=format&fit=crop&w=600&q=80",
-    streamUrl: "",
-    rating: s.rating ? parseFloat(s.rating) : 4.8,
-    year: s.releaseDate ? parseInt(s.releaseDate.slice(0, 4)) : 2024,
-    genre: s.category_name || "Séries",
-    category: "Séries",
-    synopsis: s.plot || `Série: ${s.name}`,
-    badge: "SÉRIE",
-  }));
-
-  return res.json({
-    success: true,
-    type: "series",
-    categoryId,
-    totalCount,
-    page: pageNum,
-    limit: limitNum,
-    hasMore: startIndex + limitNum < totalCount,
-    items: formattedSeries,
-  });
-});
-
-app.post("/api/xtream/series-info", async (req, res) => {
-  const xtream = parseXtreamCredentialsFromReq(req.body);
-  if (!xtream) {
-    return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
-  }
-
-  const { seriesId } = req.body;
-  if (!seriesId) {
-    return res.status(400).json({ success: false, error: "ID da série ausente." });
-  }
-
-  const cacheKey = `series_info_${xtream.baseUrl}_${seriesId}`;
-  const cached = getFromXtreamCache(cacheKey);
-  if (cached) {
-    return res.json({ success: true, source: "cache", data: cached });
-  }
-
-  try {
-    const fetchUrl = `${xtream.baseUrl}/player_api.php?username=${xtream.username}&password=${xtream.password}&action=get_series_info&series_id=${encodeURIComponent(seriesId)}`;
-    const response = await fetch(fetchUrl, {
-      headers: { "User-Agent": "IPTVSmartersPlayer/3.1.5 (Linux;Android 12)" },
-      signal: AbortSignal.timeout(15000),
-    });
-
-    if (!response.ok) {
-      return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
+    if (user.id === currentAdmin.id) {
+      setFeedbackMsg({ type: 'error', text: 'Você não pode excluir sua própria conta.' });
+      return;
     }
 
-    const data = await response.json();
-    setInXtreamCache(cacheKey, data);
-    return res.json({ success: true, source: "network", data });
-  } catch (err: any) {
-    console.error("[Xtream Series Info Error]", err.message);
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get("/api/proxy-stream", async (req, res) => {
-  const targetUrl = req.query.url as string;
-  if (!targetUrl) {
-    return res.status(400).send("URL parameter missing");
-  }
-
-  try {
-    const upstreamRes = await fetch(targetUrl, {
-      method: "GET",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 IPTVSmarters",
-        ...(req.headers.range ? { Range: req.headers.range as string } : {})
-      },
-      redirect: "follow",
-      signal: AbortSignal.timeout(20000)
-    });
-
-    if (!upstreamRes.ok && upstreamRes.status !== 206) {
-      return res.status(upstreamRes.status).send(`Upstream error: ${upstreamRes.statusText}`);
+    if (targetRole === 'AdminMaster') {
+      setFeedbackMsg({ type: 'error', text: 'Não é permitido excluir o AdminMaster principal.' });
+      return;
     }
 
-    const contentType = upstreamRes.headers.get("content-type") || "";
-    const isM3U8 = targetUrl.toLowerCase().includes(".m3u8") || contentType.includes("mpegurl");
-
-    if (isM3U8) {
-      const text = await upstreamRes.text();
-      if (text.startsWith("#EXTM3U") || text.includes("#EXTINF")) {
-        const finalBaseUrl = upstreamRes.url;
-        const rewritten = text
-          .split("\n")
-          .map((line) => {
-            const trimmed = line.trim();
-            if (!trimmed) return line;
-
-            if (trimmed.startsWith("#")) {
-              if (trimmed.includes('URI="')) {
-                return trimmed.replace(/URI="([^"]+)"/g, (_, uriVal) => {
-                  try {
-                    const resolved = new URL(uriVal, finalBaseUrl).toString();
-                    return `URI="/api/proxy-stream?url=${encodeURIComponent(resolved)}"`;
-                  } catch {
-                    return `URI="${uriVal}"`;
-                  }
-                });
-              }
-              return line;
-            }
-
-            try {
-              const resolved = new URL(trimmed, finalBaseUrl).toString();
-              return `/api/proxy-stream?url=${encodeURIComponent(resolved)}`;
-            } catch {
-              return line;
-            }
-          })
-          .join("\n");
-
-        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Headers", "*");
-        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-        return res.send(rewritten);
-      }
-    }
-
-    const headers: Record<string, string> = {
-      "Content-Type": contentType || "video/mp2t",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "*",
-      "Accept-Ranges": "bytes",
-    };
-
-    if (upstreamRes.headers.get("content-length")) {
-      headers["Content-Length"] = upstreamRes.headers.get("content-length")!;
-    }
-    if (upstreamRes.headers.get("content-range")) {
-      headers["Content-Range"] = upstreamRes.headers.get("content-range")!;
-    }
-
-    res.writeHead(upstreamRes.status, headers);
-
-    if (upstreamRes.body) {
-      const nodeStream = Readable.fromWeb(upstreamRes.body as any);
-      nodeStream.pipe(res);
-      req.on("close", () => {
-        nodeStream.destroy();
+    if (isRevenda && targetRole !== 'UsuarioComum') {
+      setFeedbackMsg({ 
+        type: 'error', 
+        text: 'AdminRevenda não tem permissão para remover revendedores ou administradores.' 
       });
-    } else {
-      res.end();
+      return;
     }
-  } catch (err: any) {
-    console.error("[Proxy Stream Error]", err.message);
-    if (!res.headersSent) {
-      res.status(502).send(`Stream proxy error: ${err.message}`);
+
+    setPendingDeleteId(user.id);
+    setFeedbackMsg(null);
+  };
+
+  const handleConfirmDelete = async (user: UserAccount) => {
+    setActionLoadingId(user.id);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message || `Usuário @${user.username} excluído com sucesso.` });
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao excluir usuário.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha ao tentar excluir usuário.' });
+    } finally {
+      setActionLoadingId(null);
+      setPendingDeleteId(null);
     }
-  }
-});
+  };
 
-async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
+  const handleQuickRenew = async (targetUser: UserAccount, days: number, customDate?: string) => {
+    setActionLoadingId(targetUser.id);
+    setIsRenewing(true);
+    setFeedbackMsg(null);
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[IPTV Server] Server running on http://0.0.0.0:${PORT}`);
+    try {
+      const token = getAuthToken();
+      const payload = customDate !== undefined 
+        ? { newExpirationDate: customDate }
+        : { days };
+
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(targetUser.id)}/renew`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` 
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (data.success && data.users) {
+        setUsers(data.users);
+        setFeedbackMsg({ type: 'success', text: data.message });
+        setRenewingUser(null);
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao renovar vencimento do cliente.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha ao comunicar com o servidor para renovação.' });
+    } finally {
+      setActionLoadingId(null);
+      setIsRenewing(false);
+    }
+  };
+
+  const handleToggleRegistration = async () => {
+    const nextState = !allowRegistration;
+    setSettingLoading(true);
+    setFeedbackMsg(null);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch('/api/admin/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ allowPublicRegistration: nextState }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAllowRegistration(nextState);
+        setFeedbackMsg({ type: 'success', text: data.message });
+      } else {
+        setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao atualizar configurações.' });
+      }
+    } catch {
+      setFeedbackMsg({ type: 'error', text: 'Falha de comunicação ao atualizar configuração.' });
+    } finally {
+      setSettingLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  const filteredUsers = users.filter((u) => {
+    const role = normalizeUserRole(u.role);
+    const expInfo = getExpirationInfo(u.expirationDate);
+
+    if (filterRole === 'UsuarioComum' && role !== 'UsuarioComum') return false;
+    if (filterRole === 'AdminRevenda' && role !== 'AdminRevenda') return false;
+    if (filterRole === 'AdminMaster' && role !== 'AdminMaster') return false;
+    if (filterRole === 'expired' && !expInfo.isExpired) return false;
+
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return true;
+    return (
+      u.name.toLowerCase().includes(q) ||
+      u.username.toLowerCase().includes(q) ||
+      (u.email ? u.email.toLowerCase().includes(q) : false) ||
+      (u.createdBy ? u.createdBy.toLowerCase().includes(q) : false)
+    );
   });
-}
 
-startServer();
+  const totalUsers = users.length;
+  const clientUsers = users.filter(u => normalizeUserRole(u.role) === 'UsuarioComum').length;
+  const revendaUsers = users.filter(u => normalizeUserRole(u.role) === 'AdminRevenda').length;
+  const masterUsers = users.filter(u => normalizeUserRole(u.role) === 'AdminMaster').length;
+  const expiredUsers = users.filter(u => getExpirationInfo(u.expirationDate).isExpired).length;
+  const blockedUsersCount = users.filter((u) => u.isBlocked).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+      <div 
+        id="admin-users-modal"
+        className="w-full max-w-4xl bg-[#0C1222] border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
+      >
+        <div className="px-5 py-3.5 bg-[#111A2E] border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md ${
+              isMaster 
+                ? 'bg-amber-500/20 border border-amber-500/40 text-amber-400 shadow-amber-500/10'
+                : 'bg-blue-600/20 border border-blue-500/40 text-blue-400 shadow-blue-500/10'
+            }`}>
+              {isMaster ? <Crown className="w-5 h-5" /> : <Briefcase className="w-5 h-5" />}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white">
+                  Painel de Gestão • IPTV Pro
+                </h2>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                  isMaster
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : isRevenda
+                    ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                    : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                }`}>
+                  {isMaster ? 'Admin Master' : isRevenda ? 'Admin Revenda' : 'Usuário Comum'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">
+                {isMaster 
+                  ? 'Controle total: gerencie revendedores, clientes e datas de vencimento.'
+                  : isRevenda
+                  ? 'Gestão de revenda: adicione clientes e controle as datas de validade.'
+                  : 'Detalhes da conta e vencimento do acesso.'}
+              </p>
+            </div>
+          </div>
+          <button
+            id="close-admin-modal-btn"
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className={`px-5 py-2 text-xs flex items-center justify-between border-b ${
+          isMaster
+            ? 'bg-amber-950/30 text-amber-200 border-amber-800/40'
+            : isRevenda
+            ? 'bg-blue-950/30 text-blue-200 border-blue-800/40'
+            : 'bg-slate-900 text-slate-300 border-slate-800'
+        }`}>
+          <div className="flex items-center gap-2">
+            <Shield className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {isMaster 
+                ? 'Você possui autoridade de AdminMaster: pode adicionar ou remover revendedores e clientes livremente.'
+                : isRevenda
+                ? 'Você está no modo AdminRevenda: permissão concedida exclusivamente para gerenciar Usuários Comuns (Clientes).'
+                : 'Sua conta é de Usuário Comum. O painel de gestão requer acesso AdminMaster ou AdminRevenda.'}
+            </span>
+          </div>
+
+          {isMaster ? (
+            <div className="flex items-center gap-2 bg-slate-900/60 px-2 py-0.5 rounded-lg border border-slate-700/60">
+              <span className="text-slate-300 font-medium text-[10px]">
+                Cadastros Públicos:
+              </span>
+              <button
+                id="toggle-registration-btn"
+                onClick={handleToggleRegistration}
+                disabled={settingLoading}
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-bold text-[9px] uppercase transition cursor-pointer ${
+                  allowRegistration
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                }`}
+                title="Ativar ou desativar tela de cadastro aberta no app"
+              >
+                {allowRegistration ? (
+                  <>
+                    <ToggleRight className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Abertos</span>
+                  </>
+                ) : (
+                  <>
+                    <ToggleLeft className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Fechados</span>
+                  </>
+                )}
+              </button>
+            </div>
+          ) : (
+            <span className="text-[11px] text-slate-400 font-mono">
+              Revendedor: @{currentAdmin.username}
+            </span>
+          )}
+        </div>
+
+        <div className="px-5 bg-[#0E1628] border-b border-slate-800/80 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1 sm:gap-2">
+            <button
+              id="admin-tab-list"
+              type="button"
+              onClick={() => {
+                setActiveTab('list');
+                setFeedbackMsg(null);
+                setPendingDeleteId(null);
+              }}
+              className={`flex items-center gap-2 py-3 px-3 border-b-2 text-xs font-semibold transition cursor-pointer ${
+                activeTab === 'list'
+                  ? 'border-blue-500 text-white bg-blue-500/5'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Users className="w-4 h-4 text-blue-400" />
+              <span>Lista de Usuários</span>
+              <span className="px-1.5 py-0.5 rounded-md bg-slate-800 text-[10px] text-slate-300 font-mono">
+                {totalUsers}
+              </span>
+            </button>
+
+            <button
+              id="admin-tab-create"
+              type="button"
+              onClick={() => {
+                setActiveTab('create');
+                setFeedbackMsg(null);
+              }}
+              className={`flex items-center gap-2 py-3 px-3 border-b-2 text-xs font-semibold transition cursor-pointer ${
+                activeTab === 'create'
+                  ? 'border-emerald-500 text-white bg-emerald-500/5'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <UserPlus className="w-4 h-4 text-emerald-400" />
+              <span>{isRevenda ? '+ Novo Cliente' : '+ Criar Novo Usuário'}</span>
+            </button>
+          </div>
+
+          <button
+            onClick={fetchUsers}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 transition cursor-pointer"
+            title="Atualizar lista"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-blue-400' : ''}`} />
+            <span className="hidden sm:inline">Atualizar</span>
+          </button>
+        </div>
+
+        {feedbackMsg && (
+          <div className={`px-5 py-2.5 text-xs flex items-center justify-between border-b transition-all ${
+            feedbackMsg.type === 'success'
+              ? 'bg-emerald-950/80 text-emerald-200 border-emerald-800/80'
+              : 'bg-rose-950/80 text-rose-200 border-rose-800/80'
+          }`}>
+            <div className="flex items-center gap-2">
+              {feedbackMsg.type === 'success' ? (
+                <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              )}
+              <span>{feedbackMsg.text}</span>
+            </div>
+            <button
+              onClick={() => setFeedbackMsg(null)}
+              className="text-slate-400 hover:text-white p-0.5 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'list' && (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="p-4 bg-[#0B1120] border-b border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  id="admin-search-users-input"
+                  type="text"
+                  placeholder="Buscar por nome, @login ou email..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 transition"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-0.5 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 custom-scrollbar">
+                <button
+                  onClick={() => setFilterRole('all')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'all'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Todos ({totalUsers})
+                </button>
+
+                <button
+                  onClick={() => setFilterRole('UsuarioComum')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'UsuarioComum'
+                      ? 'bg-slate-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Clientes ({clientUsers})
+                </button>
+
+                <button
+                  onClick={() => setFilterRole('AdminRevenda')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                    filterRole === 'AdminRevenda'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Revendas ({revendaUsers})
+                </button>
+
+                {isMaster && (
+                  <button
+                    onClick={() => setFilterRole('AdminMaster')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                      filterRole === 'AdminMaster'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Masters ({masterUsers})
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setFilterRole('expired')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 flex items-center gap-1 ${
+                    filterRole === 'expired'
+                      ? 'bg-rose-600 text-white'
+                      : 'bg-slate-800 text-rose-400 hover:text-rose-300'
+                  }`}
+                >
+                  <Clock className="w-3 h-3" />
+                  Vencidos ({expiredUsers})
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2.5 custom-scrollbar">
+              {loading && users.length === 0 ? (
+                <div className="py-12 flex flex-col items-center justify-center text-slate-400 gap-2">
+                  <RefreshCw className="w-6 h-6 animate-spin text-blue-500" />
+                  <span className="text-xs">Carregando usuários do sistema...</span>
+                </div>
+              ) : filteredUsers.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <Users className="w-8 h-8 mx-auto text-slate-600" />
+                  <p className="text-xs">
+                    {searchQuery ? `Nenhum usuário encontrado para "${searchQuery}".` : 'Nenhum usuário cadastrado nesta categoria.'}
+                  </p>
+                  <button
+                    onClick={() => setActiveTab('create')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 mt-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>{isRevenda ? 'Cadastrar Novo Cliente' : 'Criar Novo Usuário'}</span>
+                  </button>
+                </div>
+              ) : (
+                filteredUsers.map((user) => {
+                  const role = normalizeUserRole(user.role);
+                  const isMe = user.id === currentAdmin.id;
+                  const isActionRunning = actionLoadingId === user.id;
+                  const isPendingDelete = pendingDeleteId === user.id;
+                  const expInfo = getExpirationInfo(user.expirationDate);
+
+                  const canEdit = isMaster || (isRevenda && (role === 'UsuarioComum' || isMe));
+                  const canDelete = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
+                  const canBlock = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
+                  const canRenew = role === 'UsuarioComum' || isMaster;
+
+                  return (
+                    <div
+                      key={user.id}
+                      id={`user-row-${user.id}`}
+                      className={`p-3.5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-3 transition ${
+                        isPendingDelete
+                          ? 'bg-rose-950/40 border-rose-500/70 ring-2 ring-rose-500/40'
+                          : user.isBlocked
+                          ? 'bg-rose-950/20 border-rose-900/50'
+                          : expInfo.isExpired
+                          ? 'bg-amber-950/15 border-amber-900/40'
+                          : role === 'AdminMaster'
+                          ? 'bg-[#151D33] border-amber-500/30'
+                          : role === 'AdminRevenda'
+                          ? 'bg-[#121B32] border-blue-500/30'
+                          : 'bg-[#121A30] border-slate-800/80 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border ${
+                          user.isBlocked
+                            ? 'bg-rose-900/30 border-rose-700/50 text-rose-300'
+                            : role === 'AdminMaster'
+                            ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                            : role === 'AdminRevenda'
+                            ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                            : 'bg-slate-800 border-slate-700 text-slate-300'
+                        }`}>
+                          {role === 'AdminMaster' ? (
+                            <Crown className="w-5 h-5" />
+                          ) : role === 'AdminRevenda' ? (
+                            <Briefcase className="w-4 h-4" />
+                          ) : (
+                            user.name ? user.name.charAt(0).toUpperCase() : 'U'
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-white text-xs truncate">
+                              {user.name}
+                            </span>
+                            <span className="text-[11px] text-slate-400 font-mono">
+                              @{user.username}
+                            </span>
+
+                            {role === 'AdminMaster' && (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Crown className="w-2.5 h-2.5" />
+                                Admin Master
+                              </span>
+                            )}
+
+                            {role === 'AdminRevenda' && (
+                              <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Briefcase className="w-2.5 h-2.5" />
+                                Admin Revenda
+                              </span>
+                            )}
+
+                            {role === 'UsuarioComum' && (
+                              <span className="px-2 py-0.5 rounded-full bg-slate-700/60 text-slate-300 border border-slate-600/50 text-[10px] font-semibold flex items-center gap-1">
+                                <UserIcon className="w-2.5 h-2.5 text-slate-400" />
+                                Cliente
+                              </span>
+                            )}
+
+                            {expInfo.status === 'vitalicio' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Sparkles className="w-2.5 h-2.5" />
+                                Vitalício
+                              </span>
+                            ) : expInfo.isExpired ? (
+                              <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center gap-1 animate-pulse">
+                                <Clock className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            ) : expInfo.status === 'warning' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <AlertTriangle className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Calendar className="w-2.5 h-2.5" />
+                                {expInfo.label}
+                              </span>
+                            )}
+
+                            {user.isBlocked && (
+                              <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center gap-1">
+                                <Lock className="w-2.5 h-2.5" />
+                                Bloqueado
+                              </span>
+                            )}
+
+                            {user.playlistUrl && (
+                              <span
+                                className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-semibold flex items-center gap-1 max-w-[140px] truncate"
+                                title={`Lista vinculada: ${user.playlistName || user.playlistUrl}`}
+                              >
+                                <Tv className="w-2.5 h-2.5 shrink-0" />
+                                <span className="truncate">{user.playlistName || 'Lista IPTV'}</span>
+                              </span>
+                            )}
+
+                            {isMe && (
+                              <span className="text-[10px] text-slate-500 italic">
+                                (Você)
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-1 flex-wrap">
+                            {user.email && <span>{user.email}</span>}
+                            {user.createdBy && (
+                              <span className="text-[10px] text-blue-300/80 bg-blue-950/40 px-1.5 py-0.5 rounded border border-blue-900/40">
+                                Criado por: @{user.createdBy}
+                              </span>
+                            )}
+                            {user.createdAt && (
+                              <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                                <Calendar className="w-3 h-3" />
+                                Cadastrado em {new Date(user.createdAt).toLocaleDateString('pt-BR')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                        {isPendingDelete ? (
+                          <>
+                            <span className="text-[11px] text-rose-200 font-bold px-1">
+                              Excluir @{user.username}?
+                            </span>
+                            <button
+                              id={`confirm-delete-${user.id}`}
+                              onClick={() => handleConfirmDelete(user)}
+                              disabled={isActionRunning}
+                              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-md shadow-rose-600/30 transition cursor-pointer active:scale-95 disabled:opacity-50"
+                            >
+                              {isActionRunning ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                              <span>Sim, excluir</span>
+                            </button>
+                            <button
+                              id={`cancel-delete-${user.id}`}
+                              onClick={() => setPendingDeleteId(null)}
+                              disabled={isActionRunning}
+                              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 transition cursor-pointer"
+                            >
+                              Cancelar
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            {canRenew && (
+                              <button
+                                id={`quick-renew-${user.id}`}
+                                onClick={() => handleQuickRenew(user, 30)}
+                                disabled={isActionRunning}
+                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 transition cursor-pointer"
+                                title="Renovar +30 dias de acesso"
+                              >
+                                <CalendarPlus className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>+30d</span>
+                              </button>
+                            )}
+
+                            {canEdit ? (
+                              <button
+                                id={`edit-user-${user.id}`}
+                                onClick={() => handleOpenEdit(user)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 transition cursor-pointer"
+                                title="Editar dados, validade e senha"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                                <span>Editar</span>
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-500 px-2 py-1 bg-slate-900/50 rounded-lg border border-slate-800">
+                                Sem Permissão
+                              </span>
+                            )}
+
+                            {canBlock && (
+                              <button
+                                id={`toggle-block-${user.id}`}
+                                onClick={() => handleToggleBlock(user)}
+                                disabled={isActionRunning}
+                                className={`p-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                                  user.isBlocked
+                                    ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
+                                    : 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
+                                }`}
+                                title={user.isBlocked ? 'Desbloquear acesso' : 'Bloquear acesso do usuário'}
+                              >
+                                {isActionRunning ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : user.isBlocked ? (
+                                  <Unlock className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Lock className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+
+                            {canDelete && (
+                              <button
+                                id={`delete-user-${user.id}`}
+                                onClick={() => handleRequestDelete(user)}
+                                disabled={isActionRunning}
+                                className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80 hover:border-rose-500/40 transition cursor-pointer"
+                                title={role === 'AdminRevenda' ? 'Excluir Revendedor (Apenas Master)' : 'Excluir conta definitivamente'}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'create' && (
+          <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
+            <div className="max-w-2xl mx-auto space-y-4">
+              <div className="p-4 rounded-xl bg-[#0E1628] border border-slate-800">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <UserPlus className="w-4 h-4 text-emerald-400" />
+                  <span>
+                    {isRevenda ? 'Cadastrar Novo Cliente (Usuário Comum)' : 'Cadastrar Novo Usuário ou Revendedor'}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Defina o cargo, credenciais de acesso, data de validade/vencimento e lista M3U.
+                </p>
+              </div>
+
+              <form onSubmit={handleCreateUserSubmit} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome Completo ou Apelido
+                    </label>
+                    <input
+                      id="admin-create-name"
+                      type="text"
+                      placeholder="Ex: João Silva"
+                      value={formName}
+                      onChange={(e) => setFormName(e.target.value)}
+                      className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome de Usuário (Login)
+                    </label>
+                    <div className="relative">
+                      <span className="text-slate-400 font-mono text-xs absolute left-3 top-1/2 -translate-y-1/2">@</span>
+                      <input
+                        id="admin-create-username"
+                        type="text"
+                        placeholder="joaosilva"
+                        value={formUsername}
+                        onChange={(e) => setFormUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      E-mail <span className="text-slate-500 font-normal">(opcional)</span>
+                    </label>
+                    <input
+                      id="admin-create-email"
+                      type="email"
+                      placeholder="cliente@email.com"
+                      value={formEmail}
+                      onChange={(e) => setFormEmail(e.target.value)}
+                      className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-semibold text-slate-300">
+                        Senha de Acesso
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleGeneratePassword}
+                        className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer hover:underline"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Gerar Senha</span>
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input
+                        id="admin-create-password"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="Mínimo 4 caracteres"
+                        value={formPassword}
+                        onChange={(e) => setFormPassword(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 pr-10 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer p-1"
+                        title={showPassword ? 'Ocultar senha' : 'Exibir senha'}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/70 border border-slate-700/70 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-emerald-300 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Data de Vencimento do Cliente</span>
+                    </label>
+                    <span className="text-[11px] text-slate-400">
+                      {formExpirationDate ? formatDateDisplay(formExpirationDate) : 'Vitalício'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      id="admin-create-expiration"
+                      type="date"
+                      value={formExpirationDate}
+                      onChange={(e) => setFormExpirationDate(e.target.value)}
+                      className="bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(30)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +30 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(60)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +60 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(90)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +90 dias
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetFormExpirationDays(365)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 transition cursor-pointer"
+                      >
+                        +1 Ano
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormExpirationDate('')}
+                        className="px-2.5 py-1.5 rounded-lg bg-purple-900/30 hover:bg-purple-900/50 text-[11px] font-semibold text-purple-300 border border-purple-700/50 transition cursor-pointer"
+                      >
+                        Vitalício
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Após essa data, o cliente não conseguirá mais efetuar login ou carregar os canais até que sua conta seja renovada.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Nível de Acesso (Cargo no Sistema)
+                  </label>
+
+                  {isRevenda ? (
+                    <div className="p-3 rounded-xl bg-blue-950/20 border border-blue-500/30 flex items-start gap-2.5">
+                      <Briefcase className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="text-xs font-bold text-white">Usuário Comum (Cliente Final)</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Como <strong>AdminRevenda</strong>, todas as contas cadastradas por você são clientes finais. Apenas o AdminMaster tem permissão para cadastrar ou remover outros revendedores.
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'UsuarioComum'
+                          ? 'bg-slate-700/40 border-emerald-500/80 ring-1 ring-emerald-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'UsuarioComum'}
+                          onChange={() => setFormRole('UsuarioComum')}
+                          className="mt-0.5 text-emerald-500 focus:ring-emerald-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <UserIcon className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Usuário Comum</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Cliente final com player e canais ao vivo.
+                          </div>
+                        </div>
+                      </label>
+
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'AdminRevenda'
+                          ? 'bg-blue-600/15 border-blue-500/80 ring-1 ring-blue-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'AdminRevenda'}
+                          onChange={() => setFormRole('AdminRevenda')}
+                          className="mt-0.5 text-blue-600 focus:ring-blue-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                            <span>Admin Revenda</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Pode adicionar e gerenciar clientes comuns.
+                          </div>
+                        </div>
+                      </label>
+
+                      <label className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition ${
+                        formRole === 'AdminMaster'
+                          ? 'bg-amber-600/15 border-amber-500/80 ring-1 ring-amber-500/40 text-white'
+                          : 'bg-[#162035] border-slate-700/80 text-slate-300 hover:border-slate-600'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="user-role"
+                          checked={formRole === 'AdminMaster'}
+                          onChange={() => setFormRole('AdminMaster')}
+                          className="mt-0.5 text-amber-500 focus:ring-amber-500"
+                        />
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            <Crown className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Admin Master</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Conta principal com controle irrestrito.
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-700/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">
+                      <Tv className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Vincular Lista M3U ao Cliente</span>
+                    </label>
+                    <span className="text-[10px] text-slate-400">(Opcional)</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-1">
+                      <input
+                        id="admin-create-playlist-name"
+                        type="text"
+                        placeholder="Nome (ex: Canais VIP)"
+                        value={formPlaylistName}
+                        onChange={(e) => setFormPlaylistName(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <input
+                        id="admin-create-playlist-url"
+                        type="url"
+                        placeholder="https://exemplo.com/lista.m3u"
+                        value={formPlaylistUrl}
+                        onChange={(e) => setFormPlaylistUrl(e.target.value)}
+                        className="w-full bg-[#162035] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-[11px]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  id="admin-submit-create-user"
+                  type="submit"
+                  disabled={isSubmittingNewUser}
+                  className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-lg shadow-emerald-600/30 transition flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
+                >
+                  {isSubmittingNewUser ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <UserPlus className="w-4 h-4" />
+                      <span>Cadastrar e Liberar Acesso</span>
+                    </>
+                  )}
+                </button>
+              </form>
+
+              {lastCreatedUser && (
+                <div className="p-4 rounded-xl bg-slate-900 border border-emerald-500/40 space-y-2.5 animate-in fade-in duration-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                      <CheckCircle className="w-4 h-4" />
+                      Dados do Usuário Cadastrado
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCopyLastCreated}
+                      className="flex items-center gap-1 text-[11px] font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-lg border border-slate-700 transition cursor-pointer"
+                    >
+                      {copiedCredentials ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Copiado!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copiar Acesso para Cliente</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2.5 bg-black/40 rounded-lg text-xs font-mono text-slate-300">
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">USUÁRIO:</span>
+                      <span className="text-white font-bold">{lastCreatedUser.username}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">SENHA:</span>
+                      <span className="text-emerald-300 font-bold">{lastCreatedUser.password}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">CARGO:</span>
+                      <span className="text-blue-300 font-bold">{lastCreatedUser.role}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">VENCIMENTO:</span>
+                      <span className="text-amber-300 font-bold">
+                        {lastCreatedUser.expirationDate ? formatDateDisplay(lastCreatedUser.expirationDate) : 'Vitalício'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <button
+                      onClick={() => setActiveTab('list')}
+                      className="text-xs text-blue-400 hover:text-blue-300 font-medium hover:underline cursor-pointer"
+                    >
+                      Ver na lista de usuários →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="px-5 py-3 bg-[#111A2E] border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+          <p className="text-[11px]">
+            {isMaster 
+              ? 'Painel Master: Controle hierárquico ativo com bloqueio instantâneo e revogação de tokens.'
+              : 'Painel Revenda: Gerencie a validade e acesso dos seus clientes com agilidade.'}
+          </p>
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-medium transition cursor-pointer"
+          >
+            Fechar
+          </button>
+        </div>
+
+        {editingUser && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3">
+            <div className="w-full max-w-lg bg-[#0F172A] border border-blue-500/40 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+              <div className="px-5 py-3.5 bg-[#14203A] border-b border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/40 text-blue-400 flex items-center justify-center">
+                    <Pencil className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">Editar Dados & Validade</h4>
+                    <span className="text-[11px] text-slate-400 font-mono">@{editingUser.username}</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingUser(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveEdit} className="p-5 space-y-3.5 max-h-[80vh] overflow-y-auto custom-scrollbar">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome Completo
+                    </label>
+                    <input
+                      id="edit-user-name"
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nome de Usuário (Login)
+                    </label>
+                    <div className="relative">
+                      <span className="text-slate-400 font-mono text-xs absolute left-3 top-1/2 -translate-y-1/2">@</span>
+                      <input
+                        id="edit-user-username"
+                        type="text"
+                        value={editUsername}
+                        onChange={(e) => setEditUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    E-mail <span className="text-slate-500 font-normal">(opcional)</span>
+                  </label>
+                  <input
+                    id="edit-user-email"
+                    type="email"
+                    value={editEmail}
+                    onChange={(e) => setEditEmail(e.target.value)}
+                    placeholder="email@exemplo.com"
+                    className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/80 border border-emerald-500/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                      <Calendar className="w-4 h-4 text-emerald-400" />
+                      <span>Alterar Data de Vencimento do Cliente</span>
+                    </label>
+                    <span className="text-[11px] font-mono text-emerald-300">
+                      {editExpirationDate ? formatDateDisplay(editExpirationDate) : 'Vitalício'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      id="edit-user-expiration"
+                      type="date"
+                      value={editExpirationDate}
+                      onChange={(e) => setEditExpirationDate(e.target.value)}
+                      className="bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(30)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 30 dias"
+                      >
+                        +30d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(60)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 60 dias"
+                      >
+                        +60d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(90)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 90 dias"
+                      >
+                        +90d
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSetEditExpirationDays(365)}
+                        className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                        title="Adicionar 1 ano"
+                      >
+                        +1a
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditExpirationDate('')}
+                        className="px-2 py-1 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 text-[11px] font-semibold text-purple-300 border border-purple-700/50 cursor-pointer"
+                        title="Remover data e deixar vitalício"
+                      >
+                        Vitalício
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Cargo / Nível de Acesso
+                  </label>
+
+                  {isMaster ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'UsuarioComum' ? 'bg-slate-700/40 border-emerald-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'UsuarioComum'}
+                          onChange={() => setEditRole('UsuarioComum')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Cliente</span>
+                      </label>
+
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'AdminRevenda' ? 'bg-blue-600/20 border-blue-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'AdminRevenda'}
+                          onChange={() => setEditRole('AdminRevenda')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Revenda</span>
+                      </label>
+
+                      <label className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer ${
+                        editRole === 'AdminMaster' ? 'bg-amber-600/20 border-amber-500 text-white' : 'bg-[#1A2642] border-slate-700/80 text-slate-300'
+                      }`}>
+                        <input
+                          type="radio"
+                          name="edit-role"
+                          checked={editRole === 'AdminMaster'}
+                          onChange={() => setEditRole('AdminMaster')}
+                          disabled={editingUser.id === currentAdmin.id}
+                        />
+                        <span className="text-xs">Master</span>
+                      </label>
+                    </div>
+                  ) : (
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-300 flex items-center justify-between">
+                      <span>Cargo Atual: <strong>{normalizeUserRole(editingUser.role)}</strong></span>
+                      <span className="text-[10px] text-slate-500">Alteração exclusiva do AdminMaster</span>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-300">
+                      Redefinir Senha <span className="text-slate-500 font-normal">(deixe vazio para manter a atual)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleGenerateEditPassword}
+                      className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer hover:underline"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      <span>Gerar Senha</span>
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <input
+                      id="edit-user-password"
+                      type={editShowPassword ? 'text' : 'password'}
+                      value={editPassword}
+                      onChange={(e) => setEditPassword(e.target.value)}
+                      placeholder="Digite uma nova senha (mínimo 4 caracteres)"
+                      className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 pr-10 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setEditShowPassword(!editShowPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer p-1"
+                      title={editShowPassword ? 'Ocultar senha' : 'Exibir senha'}
+                    >
+                      {editShowPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-700/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-cyan-300 flex items-center gap-1.5">
+                      <Tv className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Lista M3U Vinculada</span>
+                    </label>
+                    {editPlaylistUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditPlaylistUrl('');
+                          setEditPlaylistName('');
+                        }}
+                        className="text-[10px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                      >
+                        Desvincular Lista
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-1">
+                      <input
+                        id="edit-user-playlist-name"
+                        type="text"
+                        placeholder="Nome da Lista"
+                        value={editPlaylistName}
+                        onChange={(e) => setEditPlaylistName(e.target.value)}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <input
+                        id="edit-user-playlist-url"
+                        type="url"
+                        placeholder="https://exemplo.com/lista.m3u"
+                        value={editPlaylistUrl}
+                        onChange={(e) => setEditPlaylistUrl(e.target.value)}
+                        className="w-full bg-[#1A2642] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-[11px]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {editingUser.id !== currentAdmin.id && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Status de Acesso
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setEditIsBlocked(!editIsBlocked)}
+                      className={`w-full flex items-center justify-between p-2.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
+                        editIsBlocked
+                          ? 'bg-rose-950/30 border-rose-500/50 text-rose-300'
+                          : 'bg-emerald-950/30 border-emerald-500/50 text-emerald-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {editIsBlocked ? <Lock className="w-4 h-4 text-rose-400" /> : <CheckCircle className="w-4 h-4 text-emerald-400" />}
+                        <span>{editIsBlocked ? 'Conta Bloqueada' : 'Conta Ativa e Liberada'}</span>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/10">
+                        {editIsBlocked ? 'Clique para desbloquear' : 'Clique para bloquear'}
+                      </span>
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setEditingUser(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-medium transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    id="save-edit-user-btn"
+                    type="submit"
+                    disabled={isSavingEdit}
+                    className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs text-white font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                  >
+                    {isSavingEdit ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    <span>Salvar Alterações</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
