@@ -42,6 +42,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
   const [branding, setBranding] = useState<ClientBranding>(DEFAULT_BRANDING);
   const accent = branding.accentColor;
 
+  // Tela de login NÃO tem token — sempre mostra o branding global (padrão do Master).
+  // O branding do revendedor é aplicado APÓS o login, no ClientPortalView.
   useEffect(() => {
     fetch('/api/client-config')
       .then(res => res.json())
@@ -122,7 +124,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
 
   return (
     <div className="min-h-screen w-full bg-[#08080c] text-slate-100 flex items-center justify-center p-4 sm:p-6 relative overflow-hidden">
-      {/* Glow ambiente na cor do branding */}
       <div className="absolute -top-40 -left-40 w-[520px] h-[520px] rounded-full blur-[140px] pointer-events-none" style={{ background: hexWithAlpha(accent, 0.2) }} />
       <div className="absolute -bottom-40 -right-40 w-[520px] h-[520px] rounded-full blur-[160px] pointer-events-none" style={{ background: hexWithAlpha(accent, 0.12) }} />
       <div className="absolute inset-0 bg-[radial-gradient(#1e1e28_1px,transparent_1px)] [background-size:26px_26px] opacity-30 pointer-events-none" />
@@ -134,7 +135,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
           boxShadow: `0 20px 60px -15px ${hexWithAlpha(accent, 0.35)}`,
         }}
       >
-        {/* Header da marca */}
         <div className="text-center mb-8">
           <div
             className="inline-flex items-center justify-center w-20 h-20 rounded-3xl mb-4 relative overflow-hidden"
@@ -166,7 +166,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
           )}
         </div>
 
-        {/* Mensagens de feedback */}
         {errorMsg && (
           <div className="mb-4 p-3 rounded-xl bg-rose-950/80 border border-rose-600/50 flex items-start gap-2.5 text-rose-200 text-xs animate-in fade-in duration-150">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -181,7 +180,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
           </div>
         )}
 
-        {/* Formulário */}
         <form onSubmit={handleLoginSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
@@ -197,14 +195,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
                 value={loginUsername}
                 onChange={(e) => setLoginUsername(e.target.value)}
                 className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none transition"
-                onFocus={(e) => {
-                  e.target.style.boxShadow = `0 0 0 2px ${accent}`;
-                  e.target.style.borderColor = 'transparent';
-                }}
-                onBlur={(e) => {
-                  e.target.style.boxShadow = 'none';
-                  e.target.style.borderColor = '';
-                }}
+                onFocus={(e) => { e.target.style.boxShadow = `0 0 0 2px ${accent}`; e.target.style.borderColor = 'transparent'; }}
+                onBlur={(e) => { e.target.style.boxShadow = 'none'; e.target.style.borderColor = ''; }}
                 required
               />
             </div>
@@ -224,14 +216,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
                 className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl pl-9 pr-10 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none transition"
-                onFocus={(e) => {
-                  e.target.style.boxShadow = `0 0 0 2px ${accent}`;
-                  e.target.style.borderColor = 'transparent';
-                }}
-                onBlur={(e) => {
-                  e.target.style.boxShadow = 'none';
-                  e.target.style.borderColor = '';
-                }}
+                onFocus={(e) => { e.target.style.boxShadow = `0 0 0 2px ${accent}`; e.target.style.borderColor = 'transparent'; }}
+                onBlur={(e) => { e.target.style.boxShadow = 'none'; e.target.style.borderColor = ''; }}
                 required
               />
               <button
@@ -278,7 +264,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
           </button>
         </form>
 
-        {/* Footer */}
         <div className="mt-6 pt-4 border-t flex items-center justify-between text-[11px] text-slate-500" style={{ borderColor: hexWithAlpha(accent, 0.2) }}>
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5" style={{ color: accent }} />
