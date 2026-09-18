@@ -104,6 +104,8 @@ interface SystemSettings {
   allowPublicRegistration: boolean;
   clientTabs?: ClientTabConfig[];
   branding?: ClientBranding;
+  resellerBranding?: Record<string, ClientBranding>;
+  resellerTabs?: Record<string, ClientTabConfig[]>;
 }
 
 const DEFAULT_CLIENT_TABS: ClientTabConfig[] = [
@@ -131,6 +133,34 @@ function ensureDataDir() {
   }
 }
 
+function sanitizeBranding(input: any, current: ClientBranding): ClientBranding {
+  return {
+    appName: typeof input.appName === 'string' && input.appName.trim()
+      ? input.appName.trim().slice(0, 30)
+      : current.appName,
+    accentColor: typeof input.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(input.accentColor)
+      ? input.accentColor
+      : current.accentColor,
+    logoUrl: typeof input.logoUrl === 'string'
+      ? input.logoUrl.slice(0, 500000)
+      : current.logoUrl,
+    footerText: typeof input.footerText === 'string'
+      ? input.footerText.trim().slice(0, 80)
+      : current.footerText,
+  };
+}
+
+function sanitizeTabs(input: any[], current: ClientTabConfig[]): ClientTabConfig[] {
+  const validIds = ['movies', 'series', 'live', 'settings'];
+  return input
+    .filter((t: any) => t && validIds.includes(t.id))
+    .map((t: any) => ({
+      id: t.id,
+      label: typeof t.label === 'string' && t.label.trim() ? t.label.trim().slice(0, 20) : t.id.toUpperCase(),
+      visible: !!t.visible,
+    }));
+}
+
 function loadSettings(): SystemSettings {
   try {
     ensureDataDir();
@@ -145,12 +175,24 @@ function loadSettings(): SystemSettings {
       } else {
         parsed.branding = { ...DEFAULT_BRANDING, ...parsed.branding };
       }
+      if (!parsed.resellerBranding || typeof parsed.resellerBranding !== 'object') {
+        parsed.resellerBranding = {};
+      }
+      if (!parsed.resellerTabs || typeof parsed.resellerTabs !== 'object') {
+        parsed.resellerTabs = {};
+      }
       return parsed;
     }
   } catch (e) {
     console.error("[Auth] Erro ao ler settings.json:", e);
   }
-  return { allowPublicRegistration: true, clientTabs: DEFAULT_CLIENT_TABS, branding: DEFAULT_BRANDING };
+  return {
+    allowPublicRegistration: true,
+    clientTabs: DEFAULT_CLIENT_TABS,
+    branding: DEFAULT_BRANDING,
+    resellerBranding: {},
+    resellerTabs: {},
+  };
 }
 
 function saveSettings(settings: SystemSettings) {
@@ -176,22 +218,15 @@ function loadUsers(): StoredUser[] {
         let changed = false;
         const normalized: StoredUser[] = parsed.map((u: any) => {
           let r = u.role;
-          if (r === 'admin') {
-            r = 'AdminMaster';
-            changed = true;
-          } else if (r === 'user') {
-            r = 'UsuarioComum';
-            changed = true;
-          }
+          if (r === 'admin') { r = 'AdminMaster'; changed = true; }
+          else if (r === 'user') { r = 'UsuarioComum'; changed = true; }
           return {
             ...u,
             role: r,
             expirationDate: u.expirationDate !== undefined ? u.expirationDate : null,
           };
         });
-        if (changed) {
-          saveUsers(normalized);
-        }
+        if (changed) saveUsers(normalized);
         return normalized;
       }
     }
@@ -201,32 +236,22 @@ function loadUsers(): StoredUser[] {
 
   const defaultSalt = crypto.randomBytes(16).toString("hex");
   const defaultAdmin: StoredUser = {
-    id: "user_admin",
-    username: "admin",
-    name: "Administrador Master",
-    email: "admin@iptvpro.local",
-    salt: defaultSalt,
+    id: "user_admin", username: "admin", name: "Administrador Master",
+    email: "admin@iptvpro.local", salt: defaultSalt,
     passwordHash: hashPassword("admin", defaultSalt),
-    role: "AdminMaster",
-    createdAt: new Date().toISOString(),
-    isBlocked: false,
-    expirationDate: null,
+    role: "AdminMaster", createdAt: new Date().toISOString(),
+    isBlocked: false, expirationDate: null,
   };
 
   const clientSalt = crypto.randomBytes(16).toString("hex");
   const in30Days = new Date();
   in30Days.setDate(in30Days.getDate() + 30);
   const defaultClient: StoredUser = {
-    id: "user_cliente_demo",
-    username: "cliente",
-    name: "Cliente Final",
-    email: "cliente@iptv.local",
-    salt: clientSalt,
+    id: "user_cliente_demo", username: "cliente", name: "Cliente Final",
+    email: "cliente@iptv.local", salt: clientSalt,
     passwordHash: hashPassword("123456", clientSalt),
-    role: "UsuarioComum",
-    createdAt: new Date().toISOString(),
-    isBlocked: false,
-    expirationDate: in30Days.toISOString().split("T")[0],
+    role: "UsuarioComum", createdAt: new Date().toISOString(),
+    isBlocked: false, expirationDate: in30Days.toISOString().split("T")[0],
   };
 
   const initialUsers = [defaultAdmin, defaultClient];
@@ -269,9 +294,7 @@ function saveSessions(map: Map<string, { userId: string; expiresAt: number }>) {
     ensureDataDir();
     const obj: Record<string, { userId: string; expiresAt: number }> = {};
     for (const [k, v] of map.entries()) {
-      if (v && v.expiresAt > Date.now()) {
-        obj[k] = v;
-      }
+      if (v && v.expiresAt > Date.now()) obj[k] = v;
     }
     fs.writeFileSync(SESSIONS_FILE, JSON.stringify(obj, null, 2), "utf-8");
   } catch (e) {
@@ -318,9 +341,7 @@ function getAuthenticatedAdmin(req: express.Request): {
 
   if (role === "AdminRevenda" && isDateExpired(user.expirationDate)) {
     return { 
-      adminUser: null, 
-      isMaster: false, 
-      isRevenda: false, 
+      adminUser: null, isMaster: false, isRevenda: false, 
       error: `Sua conta de revendedor venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com o AdminMaster.` 
     };
   }
@@ -336,9 +357,7 @@ function getAuthenticatedUser(req: express.Request): { user: StoredUser | null; 
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.query.token as string);
 
-  if (!token) {
-    return { user: null, error: "Token de autenticação não fornecido." };
-  }
+  if (!token) return { user: null, error: "Token de autenticação não fornecido." };
 
   const users = loadUsers();
   if (token === "token_local_admin") {
@@ -359,8 +378,7 @@ function getAuthenticatedUser(req: express.Request): { user: StoredUser | null; 
   const role = normalizeRole(user.role);
   if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
     return { 
-      user: null, 
-      isExpired: true, 
+      user: null, isExpired: true, 
       error: `Seu acesso venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com o suporte ou seu revendedor para renovar.` 
     };
   }
@@ -373,13 +391,39 @@ app.get("/api/auth/settings", (req, res) => {
   return res.json({ success: true, settings });
 });
 
-// Endpoint público — config visual do app do cliente (sem auth, dados não-sensíveis)
+// Endpoint público — config visual do app do cliente
+// Se o cliente estiver autenticado e tiver sido criado por uma revenda, retorna o branding dela
 app.get("/api/client-config", (req, res) => {
   const settings = loadSettings();
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.query.token as string);
+
+  let branding = settings.branding || DEFAULT_BRANDING;
+  let clientTabs = settings.clientTabs || DEFAULT_CLIENT_TABS;
+
+  if (token) {
+    const session = sessions.get(token);
+    if (session && session.expiresAt > Date.now()) {
+      const users = loadUsers();
+      const user = users.find(u => u.id === session.userId);
+      if (user && user.createdBy) {
+        // Acha quem criou esse cliente
+        const creator = users.find(u => u.username === user.createdBy);
+        if (creator && normalizeRole(creator.role) === 'AdminRevenda') {
+          // Usa branding e tabs do revendedor
+          const rBranding = settings.resellerBranding?.[creator.id];
+          if (rBranding) branding = { ...DEFAULT_BRANDING, ...rBranding };
+          const rTabs = settings.resellerTabs?.[creator.id];
+          if (rTabs && Array.isArray(rTabs) && rTabs.length > 0) clientTabs = rTabs;
+        }
+      }
+    }
+  }
+
   return res.json({
     success: true,
-    clientTabs: settings.clientTabs || DEFAULT_CLIENT_TABS,
-    branding: settings.branding || DEFAULT_BRANDING,
+    clientTabs,
+    branding,
   });
 });
 
@@ -396,18 +440,13 @@ app.post("/api/auth/login", (req, res) => {
   }
 
   if (user.isBlocked) {
-    return res.status(403).json({
-      success: false,
-      error: "Esta conta foi bloqueada pelo administrador. Acesso negado."
-    });
+    return res.status(403).json({ success: false, error: "Esta conta foi bloqueada pelo administrador. Acesso negado." });
   }
 
   const role = normalizeRole(user.role);
   if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
     return res.status(403).json({
-      success: false,
-      isExpired: true,
-      expirationDate: user.expirationDate,
+      success: false, isExpired: true, expirationDate: user.expirationDate,
       error: `Seu acesso venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com seu revendedor ou suporte para renovar o acesso.`
     });
   }
@@ -423,9 +462,7 @@ app.post("/api/auth/login", (req, res) => {
   saveSessions(sessions);
 
   return res.json({
-    success: true,
-    user: formatSafeUser(user),
-    token,
+    success: true, user: formatSafeUser(user), token,
     message: `Bem-vindo, ${user.name}!`
   });
 });
@@ -463,15 +500,11 @@ app.post("/api/auth/register", (req, res) => {
   const passwordHash = hashPassword(password, salt);
   const newUser: StoredUser = {
     id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-    username: cleanUsername,
-    name: cleanName,
+    username: cleanUsername, name: cleanName,
     email: email && typeof email === "string" ? email.trim() : undefined,
-    passwordHash,
-    salt,
-    role: "UsuarioComum",
+    passwordHash, salt, role: "UsuarioComum",
     createdAt: new Date().toISOString(),
-    isBlocked: false,
-    expirationDate: trialDate,
+    isBlocked: false, expirationDate: trialDate,
   };
 
   users.push(newUser);
@@ -483,9 +516,7 @@ app.post("/api/auth/register", (req, res) => {
   saveSessions(sessions);
 
   return res.status(201).json({
-    success: true,
-    user: formatSafeUser(newUser),
-    token,
+    success: true, user: formatSafeUser(newUser), token,
     message: "Conta criada e autenticada com sucesso!"
   });
 });
@@ -494,67 +525,45 @@ app.get("/api/auth/me", (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.query.token as string);
 
-  if (!token) {
-    return res.status(401).json({ success: false, error: "Token não fornecido." });
-  }
+  if (!token) return res.status(401).json({ success: false, error: "Token não fornecido." });
 
   if (token === "token_local_admin") {
     const users = loadUsers();
     const admin = users.find(u => normalizeRole(u.role) === "AdminMaster" && !u.isBlocked);
-    if (admin) {
-      return res.json({
-        success: true,
-        user: formatSafeUser(admin)
-      });
-    }
+    if (admin) return res.json({ success: true, user: formatSafeUser(admin) });
   }
 
   const session = sessions.get(token);
   if (!session || session.expiresAt < Date.now()) {
-    if (session) {
-      sessions.delete(token);
-      saveSessions(sessions);
-    }
+    if (session) { sessions.delete(token); saveSessions(sessions); }
     return res.status(401).json({ success: false, error: "Sessão expirada ou inválida." });
   }
 
   const users = loadUsers();
   const user = users.find(u => u.id === session.userId);
-  if (!user) {
-    return res.status(401).json({ success: false, error: "Usuário não encontrado." });
-  }
+  if (!user) return res.status(401).json({ success: false, error: "Usuário não encontrado." });
 
   if (user.isBlocked) {
-    sessions.delete(token);
-    saveSessions(sessions);
+    sessions.delete(token); saveSessions(sessions);
     return res.status(403).json({ success: false, error: "Sua conta foi bloqueada pelo administrador." });
   }
 
   const role = normalizeRole(user.role);
   if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
-    sessions.delete(token);
-    saveSessions(sessions);
+    sessions.delete(token); saveSessions(sessions);
     return res.status(403).json({
-      success: false,
-      isExpired: true,
-      expirationDate: user.expirationDate,
+      success: false, isExpired: true, expirationDate: user.expirationDate,
       error: `Seu acesso venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com seu revendedor ou suporte para renovar o acesso.`
     });
   }
 
-  return res.json({
-    success: true,
-    user: formatSafeUser(user)
-  });
+  return res.json({ success: true, user: formatSafeUser(user) });
 });
 
 app.post("/api/auth/logout", (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : (req.body?.token as string);
-  if (token) {
-    sessions.delete(token);
-    saveSessions(sessions);
-  }
+  if (token) { sessions.delete(token); saveSessions(sessions); }
   return res.json({ success: true, message: "Desconectado com sucesso." });
 });
 
@@ -564,9 +573,7 @@ app.post("/api/auth/logout", (req, res) => {
 
 app.get("/api/user/playlist", (req, res) => {
   const { user, error } = getAuthenticatedUser(req);
-  if (error || !user) {
-    return res.status(401).json({ success: false, error: error || "Não autenticado." });
-  }
+  if (error || !user) return res.status(401).json({ success: false, error: error || "Não autenticado." });
 
   return res.json({
     success: true,
@@ -578,23 +585,17 @@ app.get("/api/user/playlist", (req, res) => {
 
 app.post("/api/user/playlist", (req, res) => {
   const { user, error } = getAuthenticatedUser(req);
-  if (error || !user) {
-    return res.status(401).json({ success: false, error: error || "Não autenticado." });
-  }
+  if (error || !user) return res.status(401).json({ success: false, error: error || "Não autenticado." });
 
   const { playlistUrl, playlistName } = req.body;
   const cleanUrl = typeof playlistUrl === "string" ? playlistUrl.trim() : "";
   const cleanName = typeof playlistName === "string" && playlistName.trim() ? playlistName.trim() : "Minha Lista IPTV";
 
-  if (!cleanUrl) {
-    return res.status(400).json({ success: false, error: "A URL da lista M3U é obrigatória." });
-  }
+  if (!cleanUrl) return res.status(400).json({ success: false, error: "A URL da lista M3U é obrigatória." });
 
   const users = loadUsers();
   const index = users.findIndex(u => u.id === user.id);
-  if (index === -1) {
-    return res.status(404).json({ success: false, error: "Usuário não localizado para salvar a lista." });
-  }
+  if (index === -1) return res.status(404).json({ success: false, error: "Usuário não localizado." });
 
   users[index].playlistUrl = cleanUrl;
   users[index].playlistName = cleanName;
@@ -610,9 +611,7 @@ app.post("/api/user/playlist", (req, res) => {
 
 app.delete("/api/user/playlist", (req, res) => {
   const { user, error } = getAuthenticatedUser(req);
-  if (error || !user) {
-    return res.status(401).json({ success: false, error: error || "Não autenticado." });
-  }
+  if (error || !user) return res.status(401).json({ success: false, error: error || "Não autenticado." });
 
   const users = loadUsers();
   const index = users.findIndex(u => u.id === user.id);
@@ -636,28 +635,40 @@ app.delete("/api/user/playlist", (req, res) => {
 
 app.get("/api/admin/users", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
+  if (error || !adminUser) return res.status(403).json({ success: false, error: error || "Não autorizado." });
 
   const users = loadUsers();
   const settings = loadSettings();
+
+  // Retorna a config que ESSE admin deve ver no painel
+  let myBranding = settings.branding || DEFAULT_BRANDING;
+  let myTabs = settings.clientTabs || DEFAULT_CLIENT_TABS;
+
+  if (isRevenda) {
+    const rBranding = settings.resellerBranding?.[adminUser.id];
+    if (rBranding) myBranding = { ...DEFAULT_BRANDING, ...rBranding };
+    const rTabs = settings.resellerTabs?.[adminUser.id];
+    if (rTabs && Array.isArray(rTabs) && rTabs.length > 0) myTabs = rTabs;
+  }
 
   return res.json({
     success: true,
     users: users.map(formatSafeUser),
     currentAdminRole: normalizeRole(adminUser.role),
+    currentAdminId: adminUser.id,
     isMaster,
     isRevenda,
-    settings,
+    settings: {
+      allowPublicRegistration: settings.allowPublicRegistration,
+      clientTabs: myTabs,
+      branding: myBranding,
+    },
   });
 });
 
 app.post("/api/admin/users", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
+  if (error || !adminUser) return res.status(403).json({ success: false, error: error || "Não autorizado." });
 
   const { username, password, name, email, role, playlistUrl, playlistName, expirationDate, notes } = req.body;
 
@@ -675,10 +686,7 @@ app.post("/api/admin/users", (req, res) => {
   let assignedRole: 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum';
   if (isRevenda) {
     if (role && normalizeRole(role) !== "UsuarioComum") {
-      return res.status(403).json({
-        success: false,
-        error: "AdminRevenda só tem permissão para adicionar Usuário Comum."
-      });
+      return res.status(403).json({ success: false, error: "AdminRevenda só tem permissão para adicionar Usuário Comum." });
     }
     assignedRole = "UsuarioComum";
   } else {
@@ -688,8 +696,7 @@ app.post("/api/admin/users", (req, res) => {
   const cleanPlaylistUrl = typeof playlistUrl === "string" && playlistUrl.trim() ? playlistUrl.trim() : undefined;
   const cleanPlaylistName = typeof playlistName === "string" && playlistName.trim() ? playlistName.trim() : (cleanPlaylistUrl ? "Lista IPTV" : undefined);
   const cleanExpirationDate = expirationDate && typeof expirationDate === "string" && expirationDate.trim() && expirationDate.trim() !== "vitalicio"
-    ? expirationDate.trim()
-    : null;
+    ? expirationDate.trim() : null;
 
   const users = loadUsers();
   const existing = users.find(u => u.username.toLowerCase() === cleanUsername);
@@ -701,12 +708,9 @@ app.post("/api/admin/users", (req, res) => {
   const passwordHash = hashPassword(password, salt);
   const newUser: StoredUser = {
     id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-    username: cleanUsername,
-    name: cleanName,
+    username: cleanUsername, name: cleanName,
     email: email && typeof email === "string" && email.trim() ? email.trim() : undefined,
-    passwordHash,
-    salt,
-    role: assignedRole,
+    passwordHash, salt, role: assignedRole,
     createdAt: new Date().toISOString(),
     isBlocked: false,
     playlistUrl: cleanPlaylistUrl,
@@ -731,9 +735,7 @@ app.post("/api/admin/users", (req, res) => {
 
 app.post("/api/admin/users/:id/toggle-block", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
+  if (error || !adminUser) return res.status(403).json({ success: false, error: error || "Não autorizado." });
 
   const targetId = req.params.id;
   if (targetId === adminUser.id) {
@@ -742,9 +744,7 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
 
   const users = loadUsers();
   const targetIndex = users.findIndex(u => u.id === targetId);
-  if (targetIndex === -1) {
-    return res.status(404).json({ success: false, error: "Usuário não encontrado." });
-  }
+  if (targetIndex === -1) return res.status(404).json({ success: false, error: "Usuário não encontrado." });
 
   const targetRole = normalizeRole(users[targetIndex].role);
 
@@ -753,10 +753,12 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
   }
 
   if (isRevenda && targetRole !== "UsuarioComum") {
-    return res.status(403).json({
-      success: false,
-      error: "AdminRevenda só tem permissão para gerenciar Usuários Comuns."
-    });
+    return res.status(403).json({ success: false, error: "AdminRevenda só tem permissão para gerenciar Usuários Comuns." });
+  }
+
+  // Revenda só pode gerenciar clientes que ELE criou
+  if (isRevenda && users[targetIndex].createdBy !== adminUser.username) {
+    return res.status(403).json({ success: false, error: "Você só pode gerenciar clientes criados por você." });
   }
 
   const nowBlocked = !users[targetIndex].isBlocked;
@@ -765,9 +767,7 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
 
   if (nowBlocked) {
     for (const [token, session] of sessions.entries()) {
-      if (session.userId === targetId) {
-        sessions.delete(token);
-      }
+      if (session.userId === targetId) sessions.delete(token);
     }
     saveSessions(sessions);
   }
@@ -783,18 +783,14 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
 
 app.put("/api/admin/users/:id", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
+  if (error || !adminUser) return res.status(403).json({ success: false, error: error || "Não autorizado." });
 
   const targetId = req.params.id;
   const { name, username, email, role, password, isBlocked, playlistUrl, playlistName, expirationDate, notes } = req.body;
 
   const users = loadUsers();
   const targetIndex = users.findIndex(u => u.id === targetId);
-  if (targetIndex === -1) {
-    return res.status(404).json({ success: false, error: "Usuário não encontrado." });
-  }
+  if (targetIndex === -1) return res.status(404).json({ success: false, error: "Usuário não encontrado." });
 
   const currentUser = users[targetIndex];
   const targetRole = normalizeRole(currentUser.role);
@@ -811,6 +807,11 @@ app.put("/api/admin/users/:id", (req, res) => {
     return res.status(403).json({ success: false, error: "AdminRevenda não tem permissão para alterar cargos ou promover usuários." });
   }
 
+  // Revenda só pode editar clientes que ELE criou
+  if (isRevenda && targetId !== adminUser.id && currentUser.createdBy !== adminUser.username) {
+    return res.status(403).json({ success: false, error: "Você só pode editar clientes criados por você." });
+  }
+
   if (username && typeof username === "string") {
     const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, "");
     if (cleanUsername.length < 3) {
@@ -823,9 +824,7 @@ app.put("/api/admin/users/:id", (req, res) => {
     currentUser.username = cleanUsername;
   }
 
-  if (name && typeof name === "string" && name.trim().length > 0) {
-    currentUser.name = name.trim();
-  }
+  if (name && typeof name === "string" && name.trim().length > 0) currentUser.name = name.trim();
 
   if (email !== undefined) {
     currentUser.email = typeof email === "string" && email.trim().length > 0 ? email.trim() : undefined;
@@ -854,9 +853,7 @@ app.put("/api/admin/users/:id", (req, res) => {
     currentUser.isBlocked = isBlocked;
     if (isBlocked) {
       for (const [token, session] of sessions.entries()) {
-        if (session.userId === targetId) {
-          sessions.delete(token);
-        }
+        if (session.userId === targetId) sessions.delete(token);
       }
       saveSessions(sessions);
     }
@@ -881,8 +878,7 @@ app.put("/api/admin/users/:id", (req, res) => {
   }
 
   if (notes !== undefined) {
-    const cleanNotes = typeof notes === "string" && notes.trim() ? notes.trim() : undefined;
-    currentUser.notes = cleanNotes;
+    currentUser.notes = typeof notes === "string" && notes.trim() ? notes.trim() : undefined;
   }
 
   users[targetIndex] = currentUser;
@@ -898,22 +894,22 @@ app.put("/api/admin/users/:id", (req, res) => {
 
 app.post("/api/admin/users/:id/renew", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
+  if (error || !adminUser) return res.status(403).json({ success: false, error: error || "Não autorizado." });
 
   const targetId = req.params.id;
   const users = loadUsers();
   const targetIndex = users.findIndex(u => u.id === targetId);
-  if (targetIndex === -1) {
-    return res.status(404).json({ success: false, error: "Usuário não encontrado." });
-  }
+  if (targetIndex === -1) return res.status(404).json({ success: false, error: "Usuário não encontrado." });
 
   const currentUser = users[targetIndex];
   const targetRole = normalizeRole(currentUser.role);
 
   if (isRevenda && targetRole !== "UsuarioComum") {
     return res.status(403).json({ success: false, error: "AdminRevenda só pode renovar o vencimento de Usuários Comuns." });
+  }
+
+  if (isRevenda && currentUser.createdBy !== adminUser.username) {
+    return res.status(403).json({ success: false, error: "Você só pode renovar clientes criados por você." });
   }
 
   const { days, newExpirationDate } = req.body;
@@ -925,12 +921,9 @@ app.post("/api/admin/users/:id/renew", (req, res) => {
     let baseTime = Date.now();
     if (currentUser.expirationDate && !isDateExpired(currentUser.expirationDate)) {
       const existingTime = new Date(`${currentUser.expirationDate.slice(0, 10)}T23:59:59`).getTime();
-      if (!isNaN(existingTime) && existingTime > Date.now()) {
-        baseTime = existingTime;
-      }
+      if (!isNaN(existingTime) && existingTime > Date.now()) baseTime = existingTime;
     }
-    const newTime = baseTime + days * 24 * 60 * 60 * 1000;
-    finalDateStr = new Date(newTime).toISOString().split('T')[0];
+    finalDateStr = new Date(baseTime + days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   } else {
     return res.status(400).json({ success: false, error: "Informe a quantidade de dias ou a nova data de vencimento." });
   }
@@ -953,9 +946,7 @@ app.post("/api/admin/users/:id/renew", (req, res) => {
 
 app.delete("/api/admin/users/:id", (req, res) => {
   const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
+  if (error || !adminUser) return res.status(403).json({ success: false, error: error || "Não autorizado." });
 
   const targetId = req.params.id;
   if (targetId === adminUser.id) {
@@ -964,9 +955,7 @@ app.delete("/api/admin/users/:id", (req, res) => {
 
   let users = loadUsers();
   const target = users.find(u => u.id === targetId);
-  if (!target) {
-    return res.status(404).json({ success: false, error: "Usuário não encontrado." });
-  }
+  if (!target) return res.status(404).json({ success: false, error: "Usuário não encontrado." });
 
   const targetRole = normalizeRole(target.role);
 
@@ -981,13 +970,15 @@ app.delete("/api/admin/users/:id", (req, res) => {
     });
   }
 
+  if (isRevenda && target.createdBy !== adminUser.username) {
+    return res.status(403).json({ success: false, error: "Você só pode excluir clientes criados por você." });
+  }
+
   users = users.filter(u => u.id !== targetId);
   saveUsers(users);
 
   for (const [token, session] of sessions.entries()) {
-    if (session.userId === targetId) {
-      sessions.delete(token);
-    }
+    if (session.userId === targetId) sessions.delete(token);
   }
   saveSessions(sessions);
 
@@ -999,45 +990,36 @@ app.delete("/api/admin/users/:id", (req, res) => {
 });
 
 app.post("/api/admin/settings", (req, res) => {
-  const { adminUser, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
+  const { adminUser, isMaster, isRevenda, error } = getAuthenticatedAdmin(req);
+  if (error || !adminUser) return res.status(403).json({ success: false, error: error || "Não autorizado." });
 
   const { allowPublicRegistration, clientTabs, branding } = req.body;
   const settings = loadSettings();
 
-  if (typeof allowPublicRegistration === "boolean") {
+  // Cadastros públicos só Master controla
+  if (typeof allowPublicRegistration === "boolean" && isMaster) {
     settings.allowPublicRegistration = allowPublicRegistration;
   }
 
-  if (Array.isArray(clientTabs)) {
-    const validIds = ['movies', 'series', 'live', 'settings'];
-    settings.clientTabs = clientTabs
-      .filter((t: any) => t && validIds.includes(t.id))
-      .map((t: any) => ({
-        id: t.id,
-        label: typeof t.label === 'string' && t.label.trim() ? t.label.trim().slice(0, 20) : t.id.toUpperCase(),
-        visible: !!t.visible,
-      }));
-  }
+  // Master → salva global. Revenda → salva no próprio bucket
+  if (isMaster) {
+    if (Array.isArray(clientTabs)) {
+      settings.clientTabs = sanitizeTabs(clientTabs, settings.clientTabs || DEFAULT_CLIENT_TABS);
+    }
+    if (branding && typeof branding === 'object') {
+      settings.branding = sanitizeBranding(branding, settings.branding || DEFAULT_BRANDING);
+    }
+  } else {
+    if (!settings.resellerBranding) settings.resellerBranding = {};
+    if (!settings.resellerTabs) settings.resellerTabs = {};
 
-  if (branding && typeof branding === 'object') {
-    const current = settings.branding || DEFAULT_BRANDING;
-    settings.branding = {
-      appName: typeof branding.appName === 'string' && branding.appName.trim()
-        ? branding.appName.trim().slice(0, 30)
-        : current.appName,
-      accentColor: typeof branding.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(branding.accentColor)
-        ? branding.accentColor
-        : current.accentColor,
-      logoUrl: typeof branding.logoUrl === 'string'
-        ? branding.logoUrl.slice(0, 500000)
-        : current.logoUrl,
-      footerText: typeof branding.footerText === 'string'
-        ? branding.footerText.trim().slice(0, 80)
-        : current.footerText,
-    };
+    if (Array.isArray(clientTabs)) {
+      settings.resellerTabs[adminUser.id] = sanitizeTabs(clientTabs, DEFAULT_CLIENT_TABS);
+    }
+    if (branding && typeof branding === 'object') {
+      const current = settings.resellerBranding[adminUser.id] || DEFAULT_BRANDING;
+      settings.resellerBranding[adminUser.id] = sanitizeBranding(branding, current);
+    }
   }
 
   saveSettings(settings);
@@ -1077,19 +1059,12 @@ function extractXtreamCredentials(urlStr: string) {
       const baseUrl = `${parsed.protocol}//${parsed.host}`;
       return { baseUrl, username, password };
     }
-  } catch {
-  }
+  } catch {}
   return null;
 }
 
 app.post("/api/load-playlist", async (req, res) => {
-  const { 
-    url, 
-    maxChannels = 0,
-    preferFormat = "m3u8",
-    mode = "all",
-    includeVod = true
-  } = req.body;
+  const { url, maxChannels = 0, preferFormat = "m3u8", mode = "all" } = req.body;
 
   if (!url || typeof url !== "string") {
     return res.status(400).json({ error: "URL inválida ou ausente." });
@@ -1147,13 +1122,11 @@ app.post("/api/load-playlist", async (req, res) => {
             });
 
             groupCountMap.set(group, (groupCountMap.get(group) || 0) + 1);
-
             if (channels.length >= effectiveMax) break;
           }
 
           const groups: ChannelGroup[] = Array.from(groupCountMap.entries()).map(([name, count]) => ({
-            name,
-            count
+            name, count
           })).sort((a, b) => b.count - a.count);
 
           return res.json({
@@ -1162,8 +1135,7 @@ app.post("/api/load-playlist", async (req, res) => {
             totalLiveChannels: streamsData.length,
             loadedCount: channels.length,
             message: `Carregados todos os ${channels.length} canais de TV ao vivo com sucesso via API Xtream!`,
-            channels,
-            groups
+            channels, groups
           });
         }
       }
@@ -1187,33 +1159,21 @@ app.post("/api/load-playlist", async (req, res) => {
       });
     }
 
-    if (!response.body) {
-      return res.status(400).json({ error: "Resposta da lista vazia." });
-    }
+    if (!response.body) return res.status(400).json({ error: "Resposta da lista vazia." });
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
-    let currentMetadata: {
-      name: string;
-      logo?: string;
-      group?: string;
-      tvgId?: string;
-      tvgName?: string;
-    } | null = null;
+    let currentMetadata: any = null;
 
     const channels: ParsedChannel[] = [];
     const groupCountMap = new Map<string, number>();
 
-    let countLive = 0;
-    let countMovies = 0;
-    let countSeries = 0;
+    let countLive = 0, countMovies = 0, countSeries = 0;
 
     while (true) {
       const { done, value } = await reader.read();
-      if (value) {
-        buffer += decoder.decode(value, { stream: !done });
-      }
+      if (value) buffer += decoder.decode(value, { stream: !done });
 
       const lines = buffer.split(/\r?\n/);
       buffer = done ? "" : (lines.pop() || "");
@@ -1248,11 +1208,8 @@ app.post("/api/load-playlist", async (req, res) => {
           const isVod = isMovie || isSerie;
 
           let shouldInclude = true;
-          if (mode === "live" && isVod) {
-            shouldInclude = false;
-          } else if (mode === "vod" && !isVod) {
-            shouldInclude = false;
-          }
+          if (mode === "live" && isVod) shouldInclude = false;
+          else if (mode === "vod" && !isVod) shouldInclude = false;
 
           if (shouldInclude) {
             const groupName = currentMetadata.group || "Geral";
@@ -1271,24 +1228,18 @@ app.post("/api/load-playlist", async (req, res) => {
             else countLive++;
 
             groupCountMap.set(groupName, (groupCountMap.get(groupName) || 0) + 1);
-
-            if (channels.length >= effectiveMax) {
-              break;
-            }
+            if (channels.length >= effectiveMax) break;
           }
 
           currentMetadata = null;
         }
       }
 
-      if (done || channels.length >= effectiveMax) {
-        break;
-      }
+      if (done || channels.length >= effectiveMax) break;
     }
 
     const groups: ChannelGroup[] = Array.from(groupCountMap.entries()).map(([name, count]) => ({
-      name,
-      count
+      name, count
     })).sort((a, b) => b.count - a.count);
 
     if (channels.length === 0) {
@@ -1299,15 +1250,9 @@ app.post("/api/load-playlist", async (req, res) => {
       success: true,
       source: "m3u_stream",
       loadedCount: channels.length,
-      stats: {
-        live: countLive,
-        movies: countMovies,
-        series: countSeries,
-        total: channels.length
-      },
+      stats: { live: countLive, movies: countMovies, series: countSeries, total: channels.length },
       message: `Lista inteira carregada com sucesso! ${channels.length} itens totais (${countLive} canais ao vivo, ${countMovies} filmes e ${countSeries} séries).`,
-      channels,
-      groups
+      channels, groups
     });
 
   } catch (err: any) {
@@ -1351,23 +1296,15 @@ function setInXtreamCache(key: string, data: any) {
 function parseXtreamCredentialsFromReq(body: any) {
   const { url, server, username, password } = body;
   if (server && username && password) {
-    return {
-      baseUrl: server.trim().replace(/\/+$/, ''),
-      username: username.trim(),
-      password: password.trim(),
-    };
+    return { baseUrl: server.trim().replace(/\/+$/, ''), username: username.trim(), password: password.trim() };
   }
-  if (url && typeof url === 'string') {
-    return extractXtreamCredentials(url.trim());
-  }
+  if (url && typeof url === 'string') return extractXtreamCredentials(url.trim());
   return null;
 }
 
 app.post("/api/xtream/categories", async (req, res) => {
   const xtream = parseXtreamCredentialsFromReq(req.body);
-  if (!xtream) {
-    return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
-  }
+  if (!xtream) return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
 
   const type = (req.body.type || "live") as "live" | "vod" | "series";
   let action = "get_live_categories";
@@ -1376,9 +1313,7 @@ app.post("/api/xtream/categories", async (req, res) => {
 
   const cacheKey = `cats_${xtream.baseUrl}_${xtream.username}_${type}`;
   const cached = getFromXtreamCache<any[]>(cacheKey);
-  if (cached) {
-    return res.json({ success: true, source: "cache", type, categories: cached });
-  }
+  if (cached) return res.json({ success: true, source: "cache", type, categories: cached });
 
   try {
     const fetchUrl = `${xtream.baseUrl}/player_api.php?username=${xtream.username}&password=${xtream.password}&action=${action}`;
@@ -1387,14 +1322,10 @@ app.post("/api/xtream/categories", async (req, res) => {
       signal: AbortSignal.timeout(15000),
     });
 
-    if (!response.ok) {
-      return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
-    }
+    if (!response.ok) return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
 
     const data = await response.json();
-    if (!Array.isArray(data)) {
-      return res.status(500).json({ success: false, error: "Resposta inesperada do servidor Xtream." });
-    }
+    if (!Array.isArray(data)) return res.status(500).json({ success: false, error: "Resposta inesperada do servidor Xtream." });
 
     const categories = data.map((c: any) => ({
       id: String(c.category_id),
@@ -1411,9 +1342,7 @@ app.post("/api/xtream/categories", async (req, res) => {
 
 app.post("/api/xtream/streams", async (req, res) => {
   const xtream = parseXtreamCredentialsFromReq(req.body);
-  if (!xtream) {
-    return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
-  }
+  if (!xtream) return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
 
   const { type = "live", categoryId, search, preferFormat = "m3u8", page = 1, limit = 100 } = req.body;
   let action = "get_live_streams";
@@ -1435,14 +1364,10 @@ app.post("/api/xtream/streams", async (req, res) => {
         signal: AbortSignal.timeout(25000),
       });
 
-      if (!response.ok) {
-        return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
-      }
+      if (!response.ok) return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
 
       const data = await response.json();
-      if (!Array.isArray(data)) {
-        return res.status(500).json({ success: false, error: "Formato de lista inválido retornado pelo provedor." });
-      }
+      if (!Array.isArray(data)) return res.status(500).json({ success: false, error: "Formato de lista inválido retornado pelo provedor." });
 
       streams = data;
       setInXtreamCache(cacheKey, streams);
@@ -1478,12 +1403,8 @@ app.post("/api/xtream/streams", async (req, res) => {
     }));
 
     return res.json({
-      success: true,
-      type: "live",
-      categoryId,
-      totalCount,
-      page: pageNum,
-      limit: limitNum,
+      success: true, type: "live", categoryId, totalCount,
+      page: pageNum, limit: limitNum,
       hasMore: startIndex + limitNum < totalCount,
       items: formattedChannels,
     });
@@ -1508,12 +1429,8 @@ app.post("/api/xtream/streams", async (req, res) => {
     });
 
     return res.json({
-      success: true,
-      type: "vod",
-      categoryId,
-      totalCount,
-      page: pageNum,
-      limit: limitNum,
+      success: true, type: "vod", categoryId, totalCount,
+      page: pageNum, limit: limitNum,
       hasMore: startIndex + limitNum < totalCount,
       items: formattedMovies,
     });
@@ -1535,12 +1452,8 @@ app.post("/api/xtream/streams", async (req, res) => {
   }));
 
   return res.json({
-    success: true,
-    type: "series",
-    categoryId,
-    totalCount,
-    page: pageNum,
-    limit: limitNum,
+    success: true, type: "series", categoryId, totalCount,
+    page: pageNum, limit: limitNum,
     hasMore: startIndex + limitNum < totalCount,
     items: formattedSeries,
   });
@@ -1548,20 +1461,14 @@ app.post("/api/xtream/streams", async (req, res) => {
 
 app.post("/api/xtream/series-info", async (req, res) => {
   const xtream = parseXtreamCredentialsFromReq(req.body);
-  if (!xtream) {
-    return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
-  }
+  if (!xtream) return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
 
   const { seriesId } = req.body;
-  if (!seriesId) {
-    return res.status(400).json({ success: false, error: "ID da série ausente." });
-  }
+  if (!seriesId) return res.status(400).json({ success: false, error: "ID da série ausente." });
 
   const cacheKey = `series_info_${xtream.baseUrl}_${seriesId}`;
   const cached = getFromXtreamCache(cacheKey);
-  if (cached) {
-    return res.json({ success: true, source: "cache", data: cached });
-  }
+  if (cached) return res.json({ success: true, source: "cache", data: cached });
 
   try {
     const fetchUrl = `${xtream.baseUrl}/player_api.php?username=${xtream.username}&password=${xtream.password}&action=get_series_info&series_id=${encodeURIComponent(seriesId)}`;
@@ -1570,9 +1477,7 @@ app.post("/api/xtream/series-info", async (req, res) => {
       signal: AbortSignal.timeout(15000),
     });
 
-    if (!response.ok) {
-      return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
-    }
+    if (!response.ok) return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
 
     const data = await response.json();
     setInXtreamCache(cacheKey, data);
@@ -1585,9 +1490,7 @@ app.post("/api/xtream/series-info", async (req, res) => {
 
 app.get("/api/proxy-stream", async (req, res) => {
   const targetUrl = req.query.url as string;
-  if (!targetUrl) {
-    return res.status(400).send("URL parameter missing");
-  }
+  if (!targetUrl) return res.status(400).send("URL parameter missing");
 
   try {
     const upstreamRes = await fetch(targetUrl, {
@@ -1655,29 +1558,21 @@ app.get("/api/proxy-stream", async (req, res) => {
       "Accept-Ranges": "bytes",
     };
 
-    if (upstreamRes.headers.get("content-length")) {
-      headers["Content-Length"] = upstreamRes.headers.get("content-length")!;
-    }
-    if (upstreamRes.headers.get("content-range")) {
-      headers["Content-Range"] = upstreamRes.headers.get("content-range")!;
-    }
+    if (upstreamRes.headers.get("content-length")) headers["Content-Length"] = upstreamRes.headers.get("content-length")!;
+    if (upstreamRes.headers.get("content-range")) headers["Content-Range"] = upstreamRes.headers.get("content-range")!;
 
     res.writeHead(upstreamRes.status, headers);
 
     if (upstreamRes.body) {
       const nodeStream = Readable.fromWeb(upstreamRes.body as any);
       nodeStream.pipe(res);
-      req.on("close", () => {
-        nodeStream.destroy();
-      });
+      req.on("close", () => { nodeStream.destroy(); });
     } else {
       res.end();
     }
   } catch (err: any) {
     console.error("[Proxy Stream Error]", err.message);
-    if (!res.headersSent) {
-      res.status(502).send(`Stream proxy error: ${err.message}`);
-    }
+    if (!res.headersSent) res.status(502).send(`Stream proxy error: ${err.message}`);
   }
 });
 
