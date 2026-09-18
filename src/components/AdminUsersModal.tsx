@@ -36,9 +36,7 @@ import {
   StickyNote,
   UserCheck,
   UserX,
-  TrendingUp,
-  MessageCircle,
-  Send
+  TrendingUp
 } from 'lucide-react';
 
 interface AdminUsersModalProps {
@@ -74,9 +72,6 @@ export const getExpirationInfo = (expirationDate?: string | null) => {
   const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
   if (daysLeft < 0) {
     return { status: 'expired' as const, label: `Vencido (${formatDateDisplay(expirationDate)})`, isExpired: true, daysLeft, isExpiring7: false };
-  }
-  if (daysLeft <= 5) {
-    return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft, isExpiring7: true };
   }
   if (daysLeft <= 7) {
     return { status: 'warning' as const, label: `Vence em ${daysLeft}d (${formatDateDisplay(expirationDate)})`, isExpired: false, daysLeft, isExpiring7: true };
@@ -282,7 +277,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     const expText = lastCreatedUser.expirationDate 
       ? formatDateDisplay(lastCreatedUser.expirationDate)
       : 'Vitalício / Sem Vencimento';
-    const textToCopy = `🔐 *Acesso RPR TV FREE*\n👤 Usuário: ${lastCreatedUser.username}\n🔑 Senha: ${lastCreatedUser.password}\n📅 Vencimento: ${expText}\n\nBaixe o app e faça login com esses dados.`;
+    const textToCopy = `🔐 *Acesso RPR TV*\n👤 Usuário: ${lastCreatedUser.username}\n🔑 Senha: ${lastCreatedUser.password}\n📅 Vencimento: ${expText}\n\nBaixe o app e faça login com esses dados.`;
     navigator.clipboard.writeText(textToCopy);
     setCopiedCredentials(true);
     setTimeout(() => setCopiedCredentials(false), 2500);
@@ -292,7 +287,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
     const expText = user.expirationDate 
       ? formatDateDisplay(user.expirationDate)
       : 'Vitalício';
-    const textToCopy = `🔐 *Acesso RPR TV FREE*\n👤 Usuário: ${user.username}\n🔑 Senha: (a que você definiu no cadastro)\n📅 Vencimento: ${expText}\n\nBaixe o app e faça login com esses dados.`;
+    const textToCopy = `🔐 *Acesso RPR TV*\n👤 Usuário: ${user.username}\n🔑 Senha: (a que você definiu no cadastro)\n📅 Vencimento: ${expText}\n\nBaixe o app e faça login com esses dados.`;
     navigator.clipboard.writeText(textToCopy);
     setCopiedUserId(user.id);
     setTimeout(() => setCopiedUserId(null), 2000);
@@ -591,19 +586,24 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
         id="admin-users-modal"
         className="w-full max-w-4xl bg-[#0C1222] border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
       >
-        <div className="px-5 py-3.5 bg-[#111A2E] border-b border-slate-800 flex items-center justify-between">
+        {/* HEADER */}
+        <div className={`px-5 py-4 border-b flex items-center justify-between ${
+          isMaster
+            ? 'bg-gradient-to-r from-amber-950/40 via-[#111A2E] to-[#111A2E] border-amber-900/40'
+            : 'bg-gradient-to-r from-blue-950/40 via-[#111A2E] to-[#111A2E] border-blue-900/40'
+        }`}>
           <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md ${
+            <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shadow-lg ${
               isMaster 
-                ? 'bg-amber-500/20 border border-amber-500/40 text-amber-400 shadow-amber-500/10'
-                : 'bg-blue-600/20 border border-blue-500/40 text-blue-400 shadow-blue-500/10'
+                ? 'bg-gradient-to-tr from-amber-600 to-amber-400 border border-amber-400/60 text-white shadow-amber-500/30'
+                : 'bg-gradient-to-tr from-blue-700 to-blue-500 border border-blue-400/60 text-white shadow-blue-500/30'
             }`}>
               {isMaster ? <Crown className="w-5 h-5" /> : <Briefcase className="w-5 h-5" />}
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-white">
-                  Painel de Gestão • IPTV Pro
+                  Painel de Gestão • RPR TV
                 </h2>
                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
                   isMaster
@@ -633,6 +633,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </button>
         </div>
 
+        {/* NOTICE BANNER */}
         <div className={`px-5 py-2 text-xs flex items-center justify-between border-b ${
           isMaster
             ? 'bg-amber-950/30 text-amber-200 border-amber-800/40'
@@ -687,103 +688,139 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           )}
         </div>
 
-        {/* DASHBOARD DE TOPO — visão rápida para o AdminMaster */}
+        {/* DASHBOARD */}
         {isMaster && activeTab === 'list' && (
           <div className="px-5 pt-4 pb-3 bg-[#0A1020] border-b border-slate-800">
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              {/* TOTAL */}
               <button
                 onClick={() => setFilterRole('all')}
-                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                className={`group p-3 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
                   filterRole === 'all'
-                    ? 'bg-blue-600/20 border-blue-500/60 ring-1 ring-blue-500/40'
-                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                    ? 'bg-gradient-to-br from-blue-600/30 to-blue-900/20 border-blue-500/60 ring-1 ring-blue-500/40 shadow-lg shadow-blue-500/10'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-600 hover:bg-[#151d34]'
                 }`}
                 title="Ver todos os usuários"
               >
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-semibold uppercase tracking-wide">
-                  <Users className="w-3 h-3" />
-                  Total
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                    <Users className="w-3 h-3" />
+                    Total
+                  </div>
+                  <div className="w-6 h-6 rounded-lg bg-blue-500/15 flex items-center justify-center group-hover:bg-blue-500/25 transition">
+                    <Users className="w-3 h-3 text-blue-400" />
+                  </div>
                 </div>
-                <div className="text-lg font-bold text-white mt-0.5">{totalUsers}</div>
+                <div className="text-2xl font-black text-white mt-1.5 tracking-tight">{totalUsers}</div>
               </button>
 
+              {/* ATIVOS */}
               <button
                 onClick={() => setFilterRole('UsuarioComum')}
-                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                className={`group p-3 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
                   filterRole === 'UsuarioComum'
-                    ? 'bg-emerald-600/20 border-emerald-500/60 ring-1 ring-emerald-500/40'
-                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                    ? 'bg-gradient-to-br from-emerald-600/30 to-emerald-900/20 border-emerald-500/60 ring-1 ring-emerald-500/40 shadow-lg shadow-emerald-500/10'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-600 hover:bg-[#151d34]'
                 }`}
                 title="Clientes ativos (não vencidos, não bloqueados)"
               >
-                <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-semibold uppercase tracking-wide">
-                  <UserCheck className="w-3 h-3" />
-                  Ativos
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-bold uppercase tracking-wider">
+                    <UserCheck className="w-3 h-3" />
+                    Ativos
+                  </div>
+                  <div className="w-6 h-6 rounded-lg bg-emerald-500/15 flex items-center justify-center group-hover:bg-emerald-500/25 transition">
+                    <UserCheck className="w-3 h-3 text-emerald-400" />
+                  </div>
                 </div>
-                <div className="text-lg font-bold text-emerald-300 mt-0.5">{activeClients}</div>
+                <div className="text-2xl font-black text-emerald-300 mt-1.5 tracking-tight">{activeClients}</div>
               </button>
 
+              {/* VENCENDO 7D */}
               <button
                 onClick={() => setFilterRole('expiring7')}
-                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                className={`group p-3 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
                   filterRole === 'expiring7'
-                    ? 'bg-amber-600/20 border-amber-500/60 ring-1 ring-amber-500/40'
-                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                    ? 'bg-gradient-to-br from-amber-600/30 to-amber-900/20 border-amber-500/60 ring-1 ring-amber-500/40 shadow-lg shadow-amber-500/10'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-600 hover:bg-[#151d34]'
                 }`}
                 title="Clientes que vencem nos próximos 7 dias"
               >
-                <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-semibold uppercase tracking-wide">
-                  <TrendingUp className="w-3 h-3" />
-                  Vencendo 7d
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-bold uppercase tracking-wider">
+                    <TrendingUp className="w-3 h-3" />
+                    Venc. 7d
+                  </div>
+                  <div className="w-6 h-6 rounded-lg bg-amber-500/15 flex items-center justify-center group-hover:bg-amber-500/25 transition">
+                    <TrendingUp className="w-3 h-3 text-amber-400" />
+                  </div>
                 </div>
-                <div className={`text-lg font-bold mt-0.5 ${expiring7Users > 0 ? 'text-amber-300' : 'text-slate-500'}`}>
+                <div className={`text-2xl font-black mt-1.5 tracking-tight ${expiring7Users > 0 ? 'text-amber-300' : 'text-slate-500'}`}>
                   {expiring7Users}
                 </div>
               </button>
 
+              {/* VENCIDOS */}
               <button
                 onClick={() => setFilterRole('expired')}
-                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                className={`group p-3 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
                   filterRole === 'expired'
-                    ? 'bg-rose-600/20 border-rose-500/60 ring-1 ring-rose-500/40'
-                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                    ? 'bg-gradient-to-br from-rose-600/30 to-rose-900/20 border-rose-500/60 ring-1 ring-rose-500/40 shadow-lg shadow-rose-500/10'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-600 hover:bg-[#151d34]'
                 }`}
                 title="Clientes com acesso vencido"
               >
-                <div className="flex items-center gap-1.5 text-[10px] text-rose-400 font-semibold uppercase tracking-wide">
-                  <Clock className="w-3 h-3" />
-                  Vencidos
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[10px] text-rose-400 font-bold uppercase tracking-wider">
+                    <Clock className="w-3 h-3" />
+                    Vencidos
+                  </div>
+                  <div className="w-6 h-6 rounded-lg bg-rose-500/15 flex items-center justify-center group-hover:bg-rose-500/25 transition">
+                    <Clock className="w-3 h-3 text-rose-400" />
+                  </div>
                 </div>
-                <div className={`text-lg font-bold mt-0.5 ${expiredUsers > 0 ? 'text-rose-300' : 'text-slate-500'}`}>
+                <div className={`text-2xl font-black mt-1.5 tracking-tight ${expiredUsers > 0 ? 'text-rose-300' : 'text-slate-500'}`}>
                   {expiredUsers}
                 </div>
               </button>
 
+              {/* REVENDAS */}
               <button
                 onClick={() => setFilterRole('AdminRevenda')}
-                className={`p-2.5 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
+                className={`group p-3 rounded-xl border text-left transition cursor-pointer active:scale-95 ${
                   filterRole === 'AdminRevenda'
-                    ? 'bg-blue-600/20 border-blue-500/60 ring-1 ring-blue-500/40'
-                    : 'bg-[#121A30] border-slate-800 hover:border-slate-700'
+                    ? 'bg-gradient-to-br from-blue-600/30 to-blue-900/20 border-blue-500/60 ring-1 ring-blue-500/40 shadow-lg shadow-blue-500/10'
+                    : 'bg-[#121A30] border-slate-800 hover:border-slate-600 hover:bg-[#151d34]'
                 }`}
                 title="Revendedores cadastrados"
               >
-                <div className="flex items-center gap-1.5 text-[10px] text-blue-400 font-semibold uppercase tracking-wide">
-                  <Briefcase className="w-3 h-3" />
-                  Revendas
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[10px] text-blue-400 font-bold uppercase tracking-wider">
+                    <Briefcase className="w-3 h-3" />
+                    Revendas
+                  </div>
+                  <div className="w-6 h-6 rounded-lg bg-blue-500/15 flex items-center justify-center group-hover:bg-blue-500/25 transition">
+                    <Briefcase className="w-3 h-3 text-blue-400" />
+                  </div>
                 </div>
-                <div className="text-lg font-bold text-blue-300 mt-0.5">{revendaUsers}</div>
+                <div className="text-2xl font-black text-blue-300 mt-1.5 tracking-tight">{revendaUsers}</div>
               </button>
 
+              {/* BLOQUEADOS (não clicável) */}
               <div
-                className="p-2.5 rounded-xl border bg-[#121A30] border-slate-800"
+                className="group p-3 rounded-xl border bg-[#121A30] border-slate-800"
                 title="Usuários bloqueados"
               >
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-semibold uppercase tracking-wide">
-                  <UserX className="w-3 h-3" />
-                  Bloqueados
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                    <UserX className="w-3 h-3" />
+                    Bloq.
+                  </div>
+                  <div className="w-6 h-6 rounded-lg bg-slate-500/15 flex items-center justify-center">
+                    <UserX className="w-3 h-3 text-slate-400" />
+                  </div>
                 </div>
-                <div className={`text-lg font-bold mt-0.5 ${blockedUsersCount > 0 ? 'text-slate-300' : 'text-slate-500'}`}>
+                <div className={`text-2xl font-black mt-1.5 tracking-tight ${blockedUsersCount > 0 ? 'text-slate-300' : 'text-slate-500'}`}>
                   {blockedUsersCount}
                 </div>
               </div>
@@ -791,6 +828,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </div>
         )}
 
+        {/* TABS */}
         <div className="px-5 bg-[#0E1628] border-b border-slate-800/80 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1 sm:gap-2">
             <button
@@ -843,6 +881,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </button>
         </div>
 
+        {/* FEEDBACK */}
         {feedbackMsg && (
           <div className={`px-5 py-2.5 text-xs flex items-center justify-between border-b transition-all ${
             feedbackMsg.type === 'success'
@@ -866,6 +905,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </div>
         )}
 
+        {/* LIST TAB */}
         {activeTab === 'list' && (
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="p-4 bg-[#0B1120] border-b border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
@@ -969,8 +1009,10 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                   <span className="text-xs">Carregando usuários do sistema...</span>
                 </div>
               ) : filteredUsers.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 space-y-2">
-                  <Users className="w-8 h-8 mx-auto text-slate-600" />
+                <div className="py-16 text-center text-slate-400 space-y-3">
+                  <div className="w-16 h-16 mx-auto rounded-2xl bg-slate-800/40 border border-slate-700/50 flex items-center justify-center">
+                    <Users className="w-7 h-7 text-slate-500" />
+                  </div>
                   <p className="text-xs">
                     {searchQuery ? `Nenhum usuário encontrado para "${searchQuery}".` : 'Nenhum usuário cadastrado nesta categoria.'}
                   </p>
@@ -1001,22 +1043,22 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                     <div
                       key={user.id}
                       id={`user-row-${user.id}`}
-                      className={`p-3.5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-3 transition ${
+                      className={`p-3.5 rounded-xl border-l-4 border flex flex-col md:flex-row md:items-center justify-between gap-3 transition ${
                         isPendingDelete
-                          ? 'bg-rose-950/40 border-rose-500/70 ring-2 ring-rose-500/40'
+                          ? 'bg-rose-950/40 border-rose-500/70 border-l-rose-500 ring-2 ring-rose-500/40'
                           : user.isBlocked
-                          ? 'bg-rose-950/20 border-rose-900/50'
+                          ? 'bg-rose-950/20 border-rose-900/50 border-l-rose-600'
                           : expInfo.isExpired
-                          ? 'bg-amber-950/15 border-amber-900/40'
+                          ? 'bg-amber-950/15 border-amber-900/40 border-l-amber-500'
                           : role === 'AdminMaster'
-                          ? 'bg-[#151D33] border-amber-500/30'
+                          ? 'bg-[#151D33] border-amber-500/30 border-l-amber-500'
                           : role === 'AdminRevenda'
-                          ? 'bg-[#121B32] border-blue-500/30'
-                          : 'bg-[#121A30] border-slate-800/80 hover:border-slate-700'
+                          ? 'bg-[#121B32] border-blue-500/30 border-l-blue-500'
+                          : 'bg-[#121A30] border-slate-800/80 border-l-emerald-500/60 hover:border-slate-700 hover:bg-[#151d34]'
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border ${
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-base shrink-0 border-2 shadow-md ${
                           user.isBlocked
                             ? 'bg-rose-900/30 border-rose-700/50 text-rose-300'
                             : role === 'AdminMaster'
@@ -1028,7 +1070,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
                           {role === 'AdminMaster' ? (
                             <Crown className="w-5 h-5" />
                           ) : role === 'AdminRevenda' ? (
-                            <Briefcase className="w-4 h-4" />
+                            <Briefcase className="w-5 h-5" />
                           ) : (
                             user.name ? user.name.charAt(0).toUpperCase() : 'U'
                           )}
@@ -1270,6 +1312,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </div>
         )}
 
+        {/* CREATE TAB */}
         {activeTab === 'create' && (
           <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
             <div className="max-w-2xl mx-auto space-y-4">
@@ -1648,6 +1691,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </div>
         )}
 
+        {/* FOOTER */}
         <div className="px-5 py-3 bg-[#111A2E] border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
           <p className="text-[11px]">
             {isMaster 
@@ -1662,6 +1706,7 @@ export const AdminUsersModal: React.FC<AdminUsersModalProps> = ({
           </button>
         </div>
 
+        {/* EDIT MODAL */}
         {editingUser && (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3">
             <div className="w-full max-w-lg bg-[#0F172A] border border-blue-500/40 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
