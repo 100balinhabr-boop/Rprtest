@@ -24,7 +24,12 @@ import {
   X,
   Users,
   Crown,
-  Briefcase
+  Briefcase,
+  Sun,
+  PictureInPicture2,
+  Gauge,
+  SkipBack,
+  RefreshCw
 } from 'lucide-react';
 import { TvRemoteOverlay } from './TvRemoteOverlay';
 
@@ -39,6 +44,13 @@ interface IptvPlayerViewProps {
   onOpenAdminPanel?: () => void;
 }
 
+interface HlsLevelInfo {
+  index: number;
+  height: number;
+  bitrate: number;
+  name: string;
+}
+
 export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
   channels,
   categories,
@@ -50,8 +62,12 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
   onOpenAdminPanel,
 }) => {
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
+  const [lastChannel, setLastChannel] = useState<Channel | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [volume, setVolume] = useState<number>(1);
+  const [brightness, setBrightness] = useState<number>(1);
+  const [showBrightness, setShowBrightness] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isBuffering, setIsBuffering] = useState<boolean>(false);
   const [aspectRatioMode, setAspectRatioMode] = useState<'fit' | 'fill' | 'zoom'>('fit');
@@ -60,11 +76,22 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
   const [showChannelOsd, setShowChannelOsd] = useState<boolean>(false);
   const [exportNotification, setExportNotification] = useState<{ type: 'success' | 'info'; message: string } | null>(null);
+  const [controlsVisible, setControlsVisible] = useState<boolean>(true);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isPipActive, setIsPipActive] = useState<boolean>(false);
+  const [hlsLevels, setHlsLevels] = useState<HlsLevelInfo[]>([]);
+  const [currentLevel, setCurrentLevel] = useState<number>(-1);
+  const [showQualityMenu, setShowQualityMenu] = useState<boolean>(false);
+  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const [reconnectAttempt, setReconnectAttempt] = useState<number>(0);
+  const [usedFormat, setUsedFormat] = useState<'m3u8' | 'ts'>('m3u8');
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const osdTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const controlsTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Auto-select first channel on mount or channel list update
   useEffect(() => {
@@ -91,12 +118,76 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
     };
   }, [activeChannel?.id]);
 
+  // Auto-hide controls after 3.5s of inactivity when playing
+  const scheduleHideControls = () => {
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => {
+      if (isPlaying) setControlsVisible(false);
+    }, 3500);
+  };
+
+  const showControlsTemporarily = () => {
+    setControlsVisible(true);
+    scheduleHideControls();
+  };
+
+  useEffect(() => {
+    if (isPlaying) {
+      scheduleHideControls();
+    } else {
+      setControlsVisible(true);
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    }
+    return () => {
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, [isPlaying]);
+
+  // Track fullscreen state changes (user might exit via ESC/back)
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  // Track PiP state changes
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onEnter = () => setIsPipActive(true);
+    const onLeave = () => setIsPipActive(false);
+    video.addEventListener('enterpictureinpicture', onEnter);
+    video.addEventListener('leavepictureinpicture', onLeave);
+    return () => {
+      video.removeEventListener('enterpictureinpicture', onEnter);
+      video.removeEventListener('leavepictureinpicture', onLeave);
+    };
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+    };
+  }, []);
+
   // Load stream whenever activeChannel changes
   useEffect(() => {
     if (!activeChannel || !videoRef.current) return;
 
     setPlaybackError(null);
     setIsBuffering(true);
+    setIsReconnecting(false);
+    setReconnectAttempt(0);
+    setUsedFormat('m3u8');
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -111,18 +202,48 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
     }
 
     if (Hls.isSupported() && (streamUrl.includes('.m3u8') || streamUrl.includes('hls') || streamUrl.startsWith('http') || streamUrl.includes('/api/proxy-stream'))) {
+      // Buffer inteligente: mais tolerante a oscilações de rede
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
         backBufferLength: 30,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        maxBufferSize: 60 * 1000 * 1000,
+        maxBufferHole: 0.5,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 6,
+        highBufferWatchdogPeriod: 2,
+        manifestLoadingTimeOut: 20000,
+        manifestLoadingMaxRetry: 3,
+        manifestLoadingRetryDelay: 1500,
+        levelLoadingTimeOut: 20000,
+        levelLoadingMaxRetry: 4,
+        fragLoadingTimeOut: 30000,
+        fragLoadingMaxRetry: 6,
+        startLevel: -1,
+        capLevelToPlayerSize: true,
       });
 
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         setIsBuffering(false);
+        // Coletar níveis de qualidade disponíveis
+        const levels: HlsLevelInfo[] = (data.levels || []).map((lvl: any, idx: number) => ({
+          index: idx,
+          height: lvl.height || 0,
+          bitrate: lvl.bitrate || 0,
+          name: lvl.height ? `${lvl.height}p` : `${Math.round((lvl.bitrate || 0) / 1000)}kbps`,
+        }));
+        setHlsLevels(levels);
+        setCurrentLevel(hls.currentLevel);
         video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      });
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
+        setCurrentLevel(data.level);
       });
 
       hls.on(Hls.Events.BUFFER_APPENDING, () => {
@@ -134,22 +255,37 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
       });
 
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) {
-          setIsBuffering(false);
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              setPlaybackError('Erro de rede ao conectar no stream HLS.');
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              setPlaybackError('Erro nos codecs de áudio/vídeo do stream.');
-              hls.recoverMediaError();
-              break;
-            default:
-              setPlaybackError('Fluxo indisponível no momento ou bloqueado por CORS no navegador.');
-              hls.destroy();
-              break;
+        if (!data.fatal) return;
+
+        setIsBuffering(false);
+
+        // Reconexão automática: tenta 3x antes de desistir
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          const attempt = reconnectAttempt + 1;
+          if (attempt <= 3) {
+            setIsReconnecting(true);
+            setReconnectAttempt(attempt);
+            setPlaybackError(`Conexão caiu. Reconectando... (${attempt}/3)`);
+            hls.stopLoad();
+            reconnectTimerRef.current = setTimeout(() => {
+              try {
+                hls.startLoad();
+                setIsReconnecting(false);
+                setPlaybackError(null);
+              } catch {
+                // Se não recuperar, tenta fallback de formato
+                tryFormatFallback();
+              }
+            }, 2000);
+          } else {
+            setPlaybackError('Não foi possível reconectar. Tentando formato alternativo...');
+            tryFormatFallback();
           }
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          setPlaybackError('Erro nos codecs do stream. Recuperando...');
+          hls.recoverMediaError();
+        } else {
+          setPlaybackError('Stream indisponível ou bloqueado.');
         }
       });
 
@@ -177,6 +313,51 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
       }
     };
   }, [activeChannel]);
+
+  // Aplica brilho via CSS filter
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.style.filter = `brightness(${brightness})`;
+    }
+  }, [brightness]);
+
+  // Aplica volume
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = volume;
+      videoRef.current.muted = isMuted;
+    }
+  }, [volume, isMuted]);
+
+  // Fallback de formato: se o m3u8 falhar 3x, tenta .ts
+  const tryFormatFallback = () => {
+    if (!activeChannel) return;
+    if (usedFormat === 'm3u8' && activeChannel.streamUrl.includes('.m3u8')) {
+      setUsedFormat('ts');
+      setReconnectAttempt(0);
+      setPlaybackError('Tentando formato alternativo (.ts)...');
+      // Troca a URL e recarrega
+      setTimeout(() => {
+        const tsUrl = activeChannel.streamUrl.replace('.m3u8', '.ts');
+        if (videoRef.current) {
+          if (hlsRef.current) {
+            hlsRef.current.destroy();
+            hlsRef.current = null;
+          }
+          videoRef.current.src = tsUrl;
+          videoRef.current.play().then(() => {
+            setIsPlaying(true);
+            setPlaybackError(null);
+            setIsReconnecting(false);
+          }).catch(() => {
+            setPlaybackError('Formato alternativo também falhou. Canal indisponível.');
+          });
+        }
+      }, 800);
+    } else {
+      setPlaybackError('Canal indisponível. Tente novamente mais tarde.');
+    }
+  };
 
   // Normalização de texto para pesquisa sem acentos (case & diacritic insensitive)
   const normalizeText = (text: string) =>
@@ -223,9 +404,41 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
   const toggleFullscreen = () => {
     if (!playerContainerRef.current) return;
     if (!document.fullscreenElement) {
-      playerContainerRef.current.requestFullscreen().catch(() => {});
+      playerContainerRef.current.requestFullscreen()
+        .then(() => {
+          // Trava em paisagem no celular
+          if (screen.orientation && (screen.orientation as any).lock) {
+            (screen.orientation as any).lock('landscape').catch(() => {});
+          }
+        })
+        .catch(() => {});
     } else {
       document.exitFullscreen().catch(() => {});
+    }
+  };
+
+  const togglePiP = async () => {
+    if (!videoRef.current) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if ((videoRef.current as any).requestPictureInPicture) {
+        await (videoRef.current as any).requestPictureInPicture();
+      } else {
+        setPlaybackError('Picture-in-Picture não suportado neste navegador.');
+        setTimeout(() => setPlaybackError(null), 3000);
+      }
+    } catch {
+      setPlaybackError('Não foi possível ativar o PiP agora.');
+      setTimeout(() => setPlaybackError(null), 3000);
+    }
+  };
+
+  const changeQuality = (levelIndex: number) => {
+    if (hlsRef.current) {
+      hlsRef.current.currentLevel = levelIndex;
+      setCurrentLevel(levelIndex);
+      setShowQualityMenu(false);
     }
   };
 
@@ -243,24 +456,38 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
 
   const handleRemoteSelect = () => {
     if (filteredChannels[focusedIndex]) {
-      setActiveChannel(filteredChannels[focusedIndex]);
+      switchChannel(filteredChannels[focusedIndex], focusedIndex);
     }
+  };
+
+  const switchChannel = (newChannel: Channel, index?: number) => {
+    if (activeChannel && activeChannel.id !== newChannel.id) {
+      setLastChannel(activeChannel);
+    }
+    setActiveChannel(newChannel);
+    if (typeof index === 'number') setFocusedIndex(index);
   };
 
   const handleNextChannel = () => {
     if (!activeChannel || filteredChannels.length === 0) return;
     const curIdx = filteredChannels.findIndex((c) => c.id === activeChannel.id);
     const nextIdx = (curIdx + 1) % filteredChannels.length;
-    setActiveChannel(filteredChannels[nextIdx]);
-    setFocusedIndex(nextIdx);
+    switchChannel(filteredChannels[nextIdx], nextIdx);
   };
 
   const handlePrevChannel = () => {
     if (!activeChannel || filteredChannels.length === 0) return;
     const curIdx = filteredChannels.findIndex((c) => c.id === activeChannel.id);
     const prevIdx = (curIdx - 1 + filteredChannels.length) % filteredChannels.length;
-    setActiveChannel(filteredChannels[prevIdx]);
-    setFocusedIndex(prevIdx);
+    switchChannel(filteredChannels[prevIdx], prevIdx);
+  };
+
+  const handleZapLast = () => {
+    if (lastChannel) {
+      const cur = activeChannel;
+      setActiveChannel(lastChannel);
+      setLastChannel(cur);
+    }
   };
 
   const favoriteChannels = channels.filter((c) => c.isFavorite);
@@ -320,6 +547,12 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
     });
     setTimeout(() => setExportNotification(null), 5000);
   };
+
+  const currentQualityLabel = (() => {
+    if (currentLevel === -1) return 'Auto';
+    const lvl = hlsLevels.find((l) => l.index === currentLevel);
+    return lvl ? lvl.name : 'Auto';
+  })();
 
   return (
     <div id="iptv-player-view" className="flex flex-col h-full bg-[#090E1A] text-slate-100 select-none">
@@ -469,25 +702,35 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
         <div className="w-full lg:w-7/12 xl:w-8/12 flex flex-col bg-black relative border-b lg:border-b-0 lg:border-r border-slate-800">
           <div
             ref={playerContainerRef}
-            className="relative flex-1 bg-black flex items-center justify-center overflow-hidden min-h-[260px] sm:min-h-[380px]"
+            onMouseMove={showControlsTemporarily}
+            onTouchStart={showControlsTemporarily}
+            onClick={showControlsTemporarily}
+            className="relative flex-1 bg-black flex items-center justify-center overflow-hidden min-h-[260px] sm:min-h-[380px] group"
           >
             {/* Native Video Element with Aspect Ratio Class */}
             <video
               ref={videoRef}
               playsInline
-              className={`w-full h-full ${
+              className={`w-full h-full transition-all duration-200 ${
                 aspectRatioMode === 'fit'
                   ? 'object-contain'
                   : aspectRatioMode === 'fill'
                   ? 'object-fill'
                   : 'object-cover'
               }`}
-              onClick={togglePlay}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (controlsVisible) {
+                  togglePlay();
+                } else {
+                  showControlsTemporarily();
+                }
+              }}
             />
 
             {/* Buffering Spinner */}
             <AnimatePresence>
-              {isBuffering && (
+              {isBuffering && !isReconnecting && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -503,9 +746,26 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
               )}
             </AnimatePresence>
 
+            {/* Reconexão automática — banner dedicado */}
+            <AnimatePresence>
+              {isReconnecting && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-blue-950/95 border border-blue-500/50 px-4 py-2.5 rounded-xl flex items-center gap-2.5 text-blue-200 text-xs shadow-lg pointer-events-none"
+                >
+                  <RefreshCw className="w-4 h-4 text-blue-400 animate-spin" />
+                  <span className="font-semibold">
+                    Reconectando ao canal... tentativa {reconnectAttempt}/3
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Error Message Toast / Alert */}
             <AnimatePresence>
-              {playbackError && (
+              {playbackError && !isReconnecting && (
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -515,19 +775,25 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
                 >
                   <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                   <div className="flex-1">
-                    <p className="font-semibold">Aviso de Reprodução Web:</p>
+                    <p className="font-semibold">Aviso de Reprodução</p>
                     <p className="text-rose-300 mt-0.5">{playbackError}</p>
                     <p className="text-[10px] text-rose-400 mt-1">
-                      *Nota: No aplicativo nativo Android com o <strong>ExoPlayer</strong> e permissão de rede <code className="bg-rose-900/60 px-1 rounded">usesCleartextTraffic="true"</code>, este fluxo rodará nativamente sem restrições de CORS do navegador.
+                      *Nota: no app nativo Android com ExoPlayer, este fluxo roda sem restrições de CORS.
                     </p>
                   </div>
+                  <button
+                    onClick={() => setPlaybackError(null)}
+                    className="text-rose-400 hover:text-white p-0.5"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </motion.div>
               )}
             </AnimatePresence>
 
             {/* Channel Logo / Watermark Overlay */}
             <AnimatePresence mode="wait">
-              {activeChannel && (
+              {activeChannel && controlsVisible && (
                 <motion.div
                   key={activeChannel.id}
                   initial={{ opacity: 0, y: -12, scale: 0.94 }}
@@ -569,7 +835,7 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: 15, scale: 0.96 }}
                   transition={{ duration: 0.26, ease: 'easeOut' }}
-                  className="absolute bottom-20 left-4 right-4 sm:left-6 sm:right-auto sm:max-w-sm z-30 bg-slate-950/90 backdrop-blur-md border border-blue-500/40 rounded-2xl p-3.5 shadow-2xl pointer-events-none"
+                  className="absolute bottom-24 left-4 right-4 sm:left-6 sm:right-auto sm:max-w-sm z-30 bg-slate-950/90 backdrop-blur-md border border-blue-500/40 rounded-2xl p-3.5 shadow-2xl pointer-events-none"
                 >
                   <div className="flex items-center gap-3">
                     <div className="w-11 h-11 rounded-xl bg-slate-900 border border-slate-700/80 flex items-center justify-center p-1 shrink-0 overflow-hidden shadow-inner">
@@ -608,69 +874,200 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
               )}
             </AnimatePresence>
 
-            {/* In-Player Media Controls Bar */}
-            <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 flex items-center justify-between z-20">
-              <div className="flex items-center gap-3">
-                <button
-                  id="player-playpause-btn"
-                  onClick={togglePlay}
-                  className="w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition shadow-lg shadow-blue-600/30 active:scale-95"
-                  title={isPlaying ? 'Pausar' : 'Reproduzir'}
+            {/* In-Player Media Controls Bar (auto-hide) */}
+            <AnimatePresence>
+              {controlsVisible && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 20 }}
+                  transition={{ duration: 0.2 }}
+                  className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent px-3 pt-8 pb-3 z-20"
                 >
-                  {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 translate-x-0.5" />}
-                </button>
+                  {/* Barra de brilho flutuante */}
+                  <AnimatePresence>
+                    {showBrightness && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 10 }}
+                        className="absolute bottom-16 left-3 bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl px-3 py-2 flex items-center gap-2 shadow-xl"
+                      >
+                        <Sun className="w-4 h-4 text-yellow-400" />
+                        <input
+                          type="range"
+                          min="0.3"
+                          max="1.5"
+                          step="0.05"
+                          value={brightness}
+                          onChange={(e) => setBrightness(parseFloat(e.target.value))}
+                          className="w-32 h-1 accent-yellow-400"
+                        />
+                        <span className="text-[10px] text-yellow-300 font-mono w-10 text-right">
+                          {Math.round(brightness * 100)}%
+                        </span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
 
-                <button
-                  id="player-mute-btn"
-                  onClick={toggleMute}
-                  className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition"
-                  title={isMuted ? 'Desmutar' : 'Mutar'}
-                >
-                  {isMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4" />}
-                </button>
+                  {/* Menu de qualidade flutuante */}
+                  <AnimatePresence>
+                    {showQualityMenu && hlsLevels.length > 0 && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 10 }}
+                        className="absolute bottom-16 right-3 bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl py-1.5 shadow-xl min-w-[140px]"
+                      >
+                        <div className="px-3 py-1 text-[10px] text-slate-400 font-semibold uppercase tracking-wide border-b border-slate-800">
+                          Qualidade
+                        </div>
+                        <button
+                          onClick={() => changeQuality(-1)}
+                          className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 transition flex items-center justify-between ${
+                            currentLevel === -1 ? 'text-blue-400 font-bold' : 'text-slate-200'
+                          }`}
+                        >
+                          <span>Auto</span>
+                          {currentLevel === -1 && <Check className="w-3 h-3" />}
+                        </button>
+                        {hlsLevels
+                          .slice()
+                          .reverse()
+                          .map((lvl) => (
+                            <button
+                              key={lvl.index}
+                              onClick={() => changeQuality(lvl.index)}
+                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 transition flex items-center justify-between ${
+                                currentLevel === lvl.index ? 'text-blue-400 font-bold' : 'text-slate-200'
+                              }`}
+                            >
+                              <span>{lvl.name}</span>
+                              {currentLevel === lvl.index && <Check className="w-3 h-3" />}
+                            </button>
+                          ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
 
-                <button
-                  id="player-prev-btn"
-                  onClick={handlePrevChannel}
-                  className="px-2.5 py-1 text-xs rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 transition font-mono"
-                  title="Canal Anterior"
-                >
-                  Anterior
-                </button>
+                  <div className="flex items-center justify-between gap-2">
+                    {/* Left group */}
+                    <div className="flex items-center gap-1.5 sm:gap-2.5">
+                      <button
+                        id="player-playpause-btn"
+                        onClick={togglePlay}
+                        className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition shadow-lg shadow-blue-600/30 active:scale-95"
+                        title={isPlaying ? 'Pausar' : 'Reproduzir'}
+                      >
+                        {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 translate-x-0.5" />}
+                      </button>
 
-                <button
-                  id="player-next-btn"
-                  onClick={handleNextChannel}
-                  className="px-2.5 py-1 text-xs rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 transition font-mono"
-                  title="Próximo Canal"
-                >
-                  Próximo
-                </button>
-              </div>
+                      <button
+                        onClick={toggleMute}
+                        className="p-1.5 sm:p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition"
+                        title={isMuted ? 'Desmutar' : 'Mutar'}
+                      >
+                        {isMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4" />}
+                      </button>
 
-              <div className="flex items-center gap-2">
-                <button
-                  id="player-aspect-btn"
-                  onClick={cycleAspectRatio}
-                  className="px-2.5 py-1 text-xs font-mono rounded-lg bg-white/10 hover:bg-white/20 text-blue-300 border border-blue-400/30 transition uppercase"
-                  title="Alterar Aspect Ratio (Fit / Fill / Zoom)"
-                >
-                  {aspectRatioMode}
-                </button>
+                      {!isMuted && (
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={volume}
+                          onChange={(e) => setVolume(parseFloat(e.target.value))}
+                          className="hidden sm:block w-20 h-1 accent-blue-400"
+                          title="Volume"
+                        />
+                      )}
 
-                <button
-                  id="player-fullscreen-btn"
-                  onClick={toggleFullscreen}
-                  className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition"
-                  title="Tela Cheia"
-                >
-                  <Maximize2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+                      <button
+                        onClick={handleZapLast}
+                        disabled={!lastChannel}
+                        className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 transition text-xs font-mono disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Voltar ao canal anterior"
+                      >
+                        <SkipBack className="w-3.5 h-3.5" />
+                        Anterior
+                      </button>
+
+                      <button
+                        onClick={handlePrevChannel}
+                        className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 transition text-xs font-mono"
+                        title="Canal Anterior (lista)"
+                      >
+                        ⏮
+                      </button>
+
+                      <button
+                        onClick={handleNextChannel}
+                        className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 transition text-xs font-mono"
+                        title="Próximo Canal"
+                      >
+                        ⏭
+                      </button>
+                    </div>
+
+                    {/* Right group */}
+                    <div className="flex items-center gap-1.5 sm:gap-2">
+                      <button
+                        onClick={() => setShowBrightness(!showBrightness)}
+                        className={`p-1.5 sm:p-2 rounded-lg transition ${
+                          showBrightness ? 'bg-yellow-500/30 text-yellow-300' : 'bg-white/10 hover:bg-white/20 text-white'
+                        }`}
+                        title="Brilho"
+                      >
+                        <Sun className="w-4 h-4" />
+                      </button>
+
+                      {hlsLevels.length > 0 && (
+                        <button
+                          onClick={() => setShowQualityMenu(!showQualityMenu)}
+                          className={`flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-mono transition ${
+                            showQualityMenu ? 'bg-blue-600/40 text-blue-200' : 'bg-white/10 hover:bg-white/20 text-blue-300'
+                          }`}
+                          title="Qualidade"
+                        >
+                          <Gauge className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">{currentQualityLabel}</span>
+                        </button>
+                      )}
+
+                      <button
+                        onClick={togglePiP}
+                        className={`p-1.5 sm:p-2 rounded-lg transition hidden sm:block ${
+                          isPipActive ? 'bg-blue-600/40 text-blue-300' : 'bg-white/10 hover:bg-white/20 text-white'
+                        }`}
+                        title="Picture-in-Picture"
+                      >
+                        <PictureInPicture2 className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        onClick={cycleAspectRatio}
+                        className="px-2.5 py-1.5 text-xs font-mono rounded-lg bg-white/10 hover:bg-white/20 text-blue-300 border border-blue-400/30 transition uppercase"
+                        title="Alterar Aspect Ratio"
+                      >
+                        {aspectRatioMode}
+                      </button>
+
+                      <button
+                        onClick={toggleFullscreen}
+                        className="p-1.5 sm:p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition"
+                        title={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+                      >
+                        <Maximize2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
-          {/* Player Metadata & Codec Summary Footer with AnimatePresence */}
+          {/* Player Metadata & Codec Summary Footer */}
           <AnimatePresence mode="wait">
             {activeChannel && (
               <motion.div
@@ -687,6 +1084,11 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
                     <span className="px-2 py-0.5 text-[10px] rounded bg-slate-800 text-slate-300 border border-slate-700">
                       ID: {activeChannel.id}
                     </span>
+                    {usedFormat === 'ts' && (
+                      <span className="px-2 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                        Modo TS
+                      </span>
+                    )}
                   </div>
                   <div className="text-slate-400 font-mono text-[11px] truncate max-w-md">
                     URL: {activeChannel.streamUrl}
@@ -716,7 +1118,7 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
           </AnimatePresence>
         </div>
 
-        {/* Right Side: Channel List (RecyclerView Simulation) */}
+        {/* Right Side: Channel List */}
         <div className="w-full lg:w-5/12 xl:w-4/12 flex flex-col bg-[#0B1120] overflow-hidden">
           <div className="p-3 bg-[#111A2E] border-b border-slate-800 flex items-center justify-between text-xs text-slate-300">
             <span className="font-semibold flex items-center gap-2">
@@ -730,7 +1132,6 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
             </span>
           </div>
 
-          {/* Destaque quando a categoria Favoritos está ativa */}
           {selectedCategory === 'FAVORITOS' && (
             <div className="px-3 py-2 bg-amber-950/40 border-b border-amber-500/30 flex items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-1.5 text-amber-200">
@@ -751,7 +1152,6 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
             </div>
           )}
 
-          {/* Barra de Pesquisa em Tempo Real dedicada na Lista de Canais */}
           <div className="p-2.5 bg-[#0E1528] border-b border-slate-800/80">
             <div className="relative flex items-center">
               <Search className="w-4 h-4 absolute left-3 text-slate-400 pointer-events-none" />
@@ -863,10 +1263,7 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
                         transition={{ duration: 0.2, delay: Math.min(index * 0.015, 0.25) }}
                         whileHover={{ scale: 1.015 }}
                         whileTap={{ scale: 0.985 }}
-                        onClick={() => {
-                          setActiveChannel(channel);
-                          setFocusedIndex(index);
-                        }}
+                        onClick={() => switchChannel(channel, index)}
                         className={`group relative p-3 rounded-xl border text-left cursor-pointer transition-all ${
                           isSelected
                             ? 'bg-blue-600/20 border-blue-500/70 shadow-lg shadow-blue-500/10 ring-1 ring-blue-500/40'
@@ -875,7 +1272,6 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
                             : 'bg-[#131C31] hover:bg-[#18233C] border-slate-800/80'
                         }`}
                       >
-                        {/* Active Selection Glow Pill */}
                         {isSelected && (
                           <motion.div
                             layoutId="activeChannelGlow"
@@ -954,7 +1350,7 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
         </div>
       </div>
 
-      {/* Notification Toast for Favorites Export / Feedback */}
+      {/* Notification Toast */}
       <AnimatePresence>
         {exportNotification && (
           <motion.div
@@ -993,7 +1389,6 @@ export const IptvPlayerView: React.FC<IptvPlayerViewProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Floating Interactive TV Remote Overlay */}
       <TvRemoteOverlay
         isOpen={isRemoteOpen}
         onClose={() => setIsRemoteOpen(false)}
