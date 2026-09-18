@@ -91,7 +91,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/users', { headers: { Authorization: `Bearer ${getAuthToken()}` } });
+      const token = getAuthToken();
+      if (!token) {
+        setFeedbackMsg({ type: 'error', text: 'Sessão expirada. Faça login novamente.' });
+        setLoading(false);
+        return;
+      }
+      const res = await fetch('/api/admin/users', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 401 || res.status === 403) {
+        setFeedbackMsg({ type: 'error', text: 'Sua sessão expirou. Recarregue e faça login novamente.' });
+        setLoading(false);
+        return;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.users)) {
         setUsers(data.users);
@@ -375,7 +386,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             <h1 className="font-black text-white text-base">RPR TV</h1>
             <p className="text-[10px] text-slate-400 font-mono">Painel Master</p>
           </div>
-          <button onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden p-1.5 text-slate-400">
+          <button type="button" onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden p-1.5 text-slate-400">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -400,6 +411,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             return (
               <button
                 key={item.id}
+                type="button"
                 onClick={() => { setSection(item.id); setSidebarOpen(false); setSearchQuery(''); setPendingDeleteId(null); }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition ${active ? 'bg-red-700/30 text-white border border-red-600/40' : 'text-slate-400 hover:text-white hover:bg-slate-800/50 border border-transparent'}`}
               >
@@ -414,10 +426,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
         </nav>
 
         <div className="px-3 py-4 border-t border-red-900/20 space-y-1">
-          <button onClick={onGoToPlayer} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-300 hover:text-white hover:bg-slate-800/50">
+          <button type="button" onClick={onGoToPlayer} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-300 hover:text-white hover:bg-slate-800/50">
             <Play className="w-4 h-4" /><span>Ir para o Player</span>
           </button>
-          <button onClick={onClose} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-rose-400 hover:bg-rose-950/30">
+          <button type="button" onClick={onClose} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-rose-400 hover:bg-rose-950/30">
             <LogOut className="w-4 h-4" /><span>Sair</span>
           </button>
         </div>
@@ -427,12 +439,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
       <main className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
         <header className="sticky top-0 z-30 bg-[#0b0b12]/95 backdrop-blur border-b border-red-900/20 px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 rounded-lg bg-slate-800/60">
+            <button type="button" onClick={() => setSidebarOpen(true)} className="lg:hidden p-2 rounded-lg bg-slate-800/60">
               <Menu className="w-5 h-5" />
             </button>
             <h2 className="text-lg font-black text-white truncate">{sectionTitle}</h2>
           </div>
-          <button onClick={fetchUsers} disabled={loading} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800/60 hover:bg-slate-700 text-slate-200 border border-slate-700/60">
+          <button type="button" onClick={fetchUsers} disabled={loading} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800/60 hover:bg-slate-700 text-slate-200 border border-slate-700/60">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">Atualizar</span>
           </button>
@@ -444,7 +456,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
               {feedbackMsg.type === 'success' ? <CheckCircle className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
               <span>{feedbackMsg.text}</span>
             </div>
-            <button onClick={() => setFeedbackMsg(null)} className="opacity-70 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
+            <button type="button" onClick={() => setFeedbackMsg(null)} className="opacity-70 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
           </div>
         )}
 
@@ -458,8 +470,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 { label: 'Vencidos', value: expiredUsers, color: 'rose', icon: Clock, target: 'clients' as Section },
                 { label: 'Revendas', value: revendaUsers, color: 'blue', icon: Briefcase, target: 'revendas' as Section },
                 { label: 'Admins', value: masterUsers, color: 'amber', icon: Crown, target: 'admins' as Section, masterOnly: true },
-                { label: 'Bloqueados', value: blockedUsersCount, color: 'slate', icon: UserX, target: null },
-              ].filter(c => !c.masterOnly || isMaster).map((card, i) => {
+                { label: 'Bloqueados', value: blockedUsersCount, color: 'slate', icon: UserX, target: null as any },
+              ].filter(c => !(c as any).masterOnly || isMaster).map((card, i) => {
                 const Icon = card.icon;
                 const colorMap: any = {
                   emerald: 'from-emerald-950/40 border-emerald-800/40 text-emerald-400',
@@ -471,7 +483,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 return (
                   <button
                     key={i}
-                    onClick={() => card.target && setSection(card.target)}
+                    type="button"
+                    onClick={() => card.target && setSection(card.target as Section)}
                     disabled={!card.target}
                     className={`text-left p-5 rounded-2xl bg-gradient-to-br ${colorMap[card.color]} to-[#0b0b12] border transition ${card.target ? 'cursor-pointer hover:scale-[1.02]' : 'cursor-default'}`}
                   >
@@ -585,7 +598,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                   <h3 className="text-sm font-bold text-white flex items-center gap-2"><Shield className="w-4 h-4 text-amber-400" /> Cadastros Públicos</h3>
                   <p className="text-xs text-slate-400 mt-1">Permite que novos usuários criem conta sozinhos pela tela de login.</p>
                 </div>
-                <button onClick={handleToggleRegistration} disabled={settingLoading} className={`shrink-0 px-4 py-2 rounded-xl font-bold text-xs uppercase border ${allowRegistration ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border-rose-500/40'}`}>
+                <button type="button" onClick={handleToggleRegistration} disabled={settingLoading} className={`shrink-0 px-4 py-2 rounded-xl font-bold text-xs uppercase border ${allowRegistration ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border-rose-500/40'}`}>
                   {allowRegistration ? 'Abertos' : 'Fechados'}
                 </button>
               </div>
@@ -599,7 +612,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 <div className="relative">
                   <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Buscar por nome, @login ou email..." className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500" />
-                  {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"><X className="w-4 h-4" /></button>}
+                  {searchQuery && <button type="button" onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"><X className="w-4 h-4" /></button>}
                 </div>
                 <p className="text-[11px] text-slate-500 mt-2 font-mono">{filteredUsers.length} de {users.length}</p>
               </div>
@@ -650,18 +663,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                           <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
                             {isPending ? (
                               <>
-                                <button onClick={() => handleConfirmDelete(user)} disabled={isRunning} className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 text-white">
+                                <button type="button" onClick={() => handleConfirmDelete(user)} disabled={isRunning} className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 text-white">
                                   {isRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                                   Sim
                                 </button>
-                                <button onClick={() => setPendingDeleteId(null)} className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-700 text-slate-200">Não</button>
+                                <button type="button" onClick={() => setPendingDeleteId(null)} className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-700 text-slate-200">Não</button>
                               </>
                             ) : (
                               <>
-                                {canRenew && <button onClick={() => handleQuickRenew(user, 30)} disabled={isRunning} className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40"><CalendarPlus className="w-3.5 h-3.5" /><span>+30d</span></button>}
-                                {canEdit && <button onClick={() => handleOpenEdit(user)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40"><Pencil className="w-3.5 h-3.5" /><span>Editar</span></button>}
-                                {canBlock && <button onClick={() => handleToggleBlock(user)} disabled={isRunning} className={`p-2 rounded-xl border ${user.isBlocked ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/40' : 'bg-rose-600/20 text-rose-300 border-rose-500/40'}`}>{isRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : user.isBlocked ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}</button>}
-                                {canDelete && <button onClick={() => setPendingDeleteId(user.id)} disabled={isRunning} className="p-2 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80"><Trash2 className="w-3.5 h-3.5" /></button>}
+                                {canRenew && <button type="button" onClick={() => handleQuickRenew(user, 30)} disabled={isRunning} className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40"><CalendarPlus className="w-3.5 h-3.5" /><span>+30d</span></button>}
+                                {canEdit && <button type="button" onClick={() => handleOpenEdit(user)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40"><Pencil className="w-3.5 h-3.5" /><span>Editar</span></button>}
+                                {canBlock && <button type="button" onClick={() => handleToggleBlock(user)} disabled={isRunning} className={`p-2 rounded-xl border ${user.isBlocked ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/40' : 'bg-rose-600/20 text-rose-300 border-rose-500/40'}`}>{isRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : user.isBlocked ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}</button>}
+                                {canDelete && <button type="button" onClick={() => setPendingDeleteId(user.id)} disabled={isRunning} className="p-2 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-slate-400 hover:text-rose-400 border border-slate-700/80"><Trash2 className="w-3.5 h-3.5" /></button>}
                               </>
                             )}
                           </div>
