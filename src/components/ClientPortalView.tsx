@@ -58,7 +58,6 @@ interface ClientPortalViewProps {
 
 type ClientTab = 'movies' | 'series' | 'live' | 'settings';
 
-// Embaralha array (Fisher-Yates)
 function shuffleArray<T>(arr: T[]): T[] {
   const copy = [...arr];
   for (let i = copy.length - 1; i > 0; i--) {
@@ -68,25 +67,18 @@ function shuffleArray<T>(arr: T[]): T[] {
   return copy;
 }
 
-// Monta 8 slides do hero: 3 top (rating 7-10) + 5 aleatórios
 function buildHeroSlides(items: VodItem[]): VodItem[] {
   if (!items || items.length === 0) return [];
-
   const sorted = [...items].sort((a, b) => (b.rating || 0) - (a.rating || 0));
-
-  // Top: prefere rating >= 7, senão pega os melhores disponíveis
   let topPool = sorted.filter((m) => (m.rating || 0) >= 7);
   if (topPool.length < 3) {
     topPool = sorted;
   }
   const top3 = topPool.slice(0, 3);
-
-  // Aleatórios: pega de todo o pool, embaralha, escolhe 5 (sem repetir os do top)
   const topIds = new Set(top3.map((t) => t.id));
   const poolWithoutTop = items.filter((m) => !topIds.has(m.id));
   const shuffled = shuffleArray(poolWithoutTop);
   const random5 = shuffled.slice(0, 5);
-
   return [...top3, ...random5].slice(0, 8);
 }
 
@@ -338,6 +330,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       },
     });
 
+    try {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {
+      window.scrollTo(0, 0);
+    }
+
     setSeriesModal((prev) => ({ ...prev, isOpen: false }));
   };
 
@@ -447,7 +445,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         }
       }, 800);
     } else {
-      setPlayerError('Canal indisponível. Tente novamente mais tarde.');
+      setPlayerError('Stream indisponível. Tente novamente mais tarde.');
     }
   };
 
@@ -605,6 +603,11 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   };
 
   const handlePlayVod = (item: VodItem) => {
+    try {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {
+      window.scrollTo(0, 0);
+    }
     setNowPlaying({
       title: item.title,
       streamUrl: item.streamUrl,
@@ -718,7 +721,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return allSeries.filter((s) => s.title.toLowerCase().includes(query) || s.genre.toLowerCase().includes(query));
   }, [isXtream, selectedSeriesCat, xtreamStreamsCache, allSeries, searchQuery]);
 
-  // Hero dinâmico: 8 slides (3 top rating 7-10 + 5 aleatórios)
   const movieHeroSlides = useMemo(() => {
     return buildHeroSlides(displayedMovies);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -864,7 +866,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   };
 
   const handleZapLast = () => {
-    if (!lastChannel || !nowPlaying) return;
+    if (!lastChannel || !nowPlaying || nowPlaying.type !== 'live') return;
     const curChannel = nowPlaying.item as Channel | undefined;
     setNowPlaying({
       title: lastChannel.name,
@@ -879,9 +881,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
   };
 
-  // ============================================================
-  // RENDER DO HERO CARROSSEL — reutilizado em Filmes e Séries
-  // ============================================================
   const renderHero = (slides: VodItem[], isSeries: boolean) => {
     if (slides.length === 0) return null;
 
@@ -1114,9 +1113,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </AnimatePresence>
       </header>
 
-      {/* PLAYER INLINE — canal ao vivo */}
+      {/* PLAYER INLINE ÚNICO — serve AO VIVO e VOD */}
       <AnimatePresence>
-        {nowPlaying && nowPlaying.type === 'live' && (
+        {nowPlaying && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
@@ -1149,6 +1148,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 }}
               />
 
+              {/* Top bar */}
               <AnimatePresence>
                 {controlsVisible && (
                   <motion.div
@@ -1158,10 +1158,14 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     className="absolute top-0 left-0 right-0 z-20 p-2 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between text-white"
                   >
                     <div className="flex items-center gap-2 min-w-0">
-                      <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse shrink-0" />
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${nowPlaying.type === 'live' ? 'bg-red-600 animate-pulse' : 'bg-blue-500'}`} />
                       <span className="text-xs font-bold truncate">{nowPlaying.title}</span>
-                      <span className="text-[10px] bg-red-600/40 text-red-300 border border-red-500/40 px-1.5 py-0.5 rounded uppercase shrink-0">
-                        AO VIVO
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase shrink-0 border ${
+                        nowPlaying.type === 'live'
+                          ? 'bg-red-600/40 text-red-300 border-red-500/40'
+                          : 'bg-blue-600/40 text-blue-300 border-blue-500/40'
+                      }`}>
+                        {nowPlaying.type === 'live' ? 'AO VIVO' : 'VOD'}
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
@@ -1222,6 +1226,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               )}
 
+              {/* Bottom controls */}
               <AnimatePresence>
                 {controlsVisible && (
                   <motion.div
@@ -1330,7 +1335,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                           />
                         )}
 
-                        {lastChannel && (
+                        {/* Zap — apenas para AO VIVO */}
+                        {nowPlaying.type === 'live' && lastChannel && (
                           <button
                             onClick={handleZapLast}
                             className="hidden sm:flex items-center gap-1 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-[11px] font-mono transition"
@@ -1391,15 +1397,11 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       </AnimatePresence>
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-3 sm:px-4 py-4 pb-28 relative z-10">
-        {/* ============================================ */}
         {/* TAB: FILMES */}
-        {/* ============================================ */}
         {activeTab === 'movies' && (
           <div className="space-y-6">
-            {/* HERO — 8 slides dinâmicos (3 top + 5 aleatórios) */}
             {!searchQuery && renderHero(movieHeroSlides, false)}
 
-            {/* Categorias Xtream VOD */}
             {isXtream && xtreamCategories.vod.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-slate-400 px-1">
@@ -1435,7 +1437,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
-            {/* GRADE VERTICAL COMPLETA — volta ao original */}
             <div className="space-y-3">
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
@@ -1521,15 +1522,11 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
-        {/* ============================================ */}
         {/* TAB: SÉRIES */}
-        {/* ============================================ */}
         {activeTab === 'series' && (
           <div className="space-y-6">
-            {/* HERO — 8 slides dinâmicos (3 top + 5 aleatórios) */}
             {!searchQuery && renderHero(seriesHeroSlides, true)}
 
-            {/* Categorias Xtream Series */}
             {isXtream && xtreamCategories.series.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-slate-400 px-1">
@@ -1565,7 +1562,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
-            {/* GRADE VERTICAL COMPLETA */}
             <div className="space-y-3">
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
@@ -1651,9 +1647,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
-        {/* ============================================ */}
-        {/* TAB: TV AO VIVO — sem alterações */}
-        {/* ============================================ */}
+        {/* TAB: TV AO VIVO */}
         {activeTab === 'live' && (
           <div>
             {activeCategory === null && (
@@ -2022,147 +2016,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </button>
         </div>
       </nav>
-
-      {/* MODAL DO PLAYER — só VOD */}
-      <AnimatePresence>
-        {nowPlaying && nowPlaying.type === 'vod' && (
-          <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 50 }}
-            className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-end sm:justify-center p-0 sm:p-4"
-          >
-            <div
-              className="relative w-full max-w-4xl mx-auto bg-black rounded-none sm:rounded-2xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col aspect-video max-h-[85vh]"
-            >
-              <div className="absolute top-0 left-0 right-0 z-20 p-3 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between text-white">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
-                  <span className="text-xs sm:text-sm font-bold truncate max-w-[200px] sm:max-w-md">
-                    {nowPlaying.title}
-                  </span>
-                  <span className="hidden sm:inline-block text-[10px] bg-red-600/40 text-red-300 border border-red-500/40 px-2 py-0.5 rounded uppercase">
-                    VOD
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={toggleFullscreen}
-                    className="p-1.5 rounded-lg bg-black/50 hover:bg-black/80 text-slate-300 hover:text-white transition cursor-pointer"
-                    title="Tela Cheia"
-                  >
-                    {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-                  </button>
-
-                  <button
-                    onClick={() => setNowPlaying(null)}
-                    className="p-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white transition cursor-pointer"
-                    title="Fechar Player"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              <video
-                ref={videoRef}
-                className="w-full h-full object-contain bg-black"
-                playsInline
-                autoPlay
-                controls={false}
-                onClick={() => {
-                  if (videoRef.current) {
-                    if (isPlaying) videoRef.current.pause();
-                    else videoRef.current.play();
-                    setIsPlaying(!isPlaying);
-                  }
-                }}
-              />
-
-              <AnimatePresence>
-                {isReconnecting && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-red-950/95 border border-red-500/50 px-4 py-2.5 rounded-xl flex items-center gap-2.5 text-red-200 text-xs shadow-lg pointer-events-none"
-                  >
-                    <RefreshCw className="w-4 h-4 text-red-400 animate-spin" />
-                    <span className="font-semibold">
-                      Reconectando... {reconnectAttempt}/3
-                    </span>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              {isBuffering && !isReconnecting && (
-                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/50 pointer-events-none">
-                  <div className="w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin mb-3 shadow-lg" />
-                  <span className="text-xs font-semibold text-white bg-black/70 px-3 py-1 rounded-full">
-                    Carregando...
-                  </span>
-                </div>
-              )}
-
-              {playerError && !isReconnecting && (
-                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 p-4 text-center">
-                  <AlertCircle className="w-10 h-10 text-red-500 mb-2" />
-                  <p className="text-sm font-semibold text-white mb-3">{playerError}</p>
-                  <button
-                    onClick={() => {
-                      if (videoRef.current) {
-                        videoRef.current.load();
-                        setPlayerError(null);
-                      }
-                    }}
-                    className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold cursor-pointer"
-                  >
-                    Tentar Novamente
-                  </button>
-                </div>
-              )}
-
-              <div className="absolute bottom-0 left-0 right-0 z-20 p-3 bg-gradient-to-t from-black/90 via-black/40 to-transparent flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => {
-                      if (videoRef.current) {
-                        if (isPlaying) {
-                          videoRef.current.pause();
-                          setIsPlaying(false);
-                        } else {
-                          videoRef.current.play();
-                          setIsPlaying(true);
-                        }
-                      }
-                    }}
-                    className="w-9 h-9 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition active:scale-95 shadow-md"
-                  >
-                    {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      if (videoRef.current) {
-                        videoRef.current.muted = !isMuted;
-                        setIsMuted(!isMuted);
-                      }
-                    }}
-                    className="p-1.5 text-slate-300 hover:text-white transition"
-                  >
-                    {isMuted ? <VolumeX className="w-5 h-5 text-red-400" /> : <Volume2 className="w-5 h-5" />}
-                  </button>
-                </div>
-
-                <div className="text-xs text-slate-300 font-medium">
-                  {nowPlaying.category}
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       <AnimatePresence>
         {isDrawerOpen && (
