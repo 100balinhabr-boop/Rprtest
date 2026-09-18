@@ -6,7 +6,8 @@ import {
   Clock, Crown, Briefcase, CalendarPlus, AlertTriangle,
   UserCheck, UserX, TrendingUp, LayoutDashboard, Settings as SettingsIcon,
   LogOut, ChevronRight, Play, Menu, Shield, Sparkles, Check,
-  Palette, GripVertical, Save, Upload, Image as ImageIcon, Type, Palette as PaletteIcon
+  Palette, GripVertical, Save, Upload, Image as ImageIcon, Type, Palette as PaletteIcon,
+  Tag
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -94,7 +95,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const [settingLoading, setSettingLoading] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  // Aparência — config dos botões + branding
+  // Filtro por revendedor (só Master usa)
+  const [filterByReseller, setFilterByReseller] = useState<string>('all'); // 'all' | 'direct' | username
+
   const [clientTabs, setClientTabs] = useState<ClientTabConfig[]>(DEFAULT_CLIENT_TABS);
   const [branding, setBranding] = useState<ClientBranding>(DEFAULT_BRANDING);
   const [savingAppearance, setSavingAppearance] = useState(false);
@@ -416,9 +419,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
       return;
     }
     const reader = new FileReader();
-    reader.onload = () => {
-      setBranding(prev => ({ ...prev, logoUrl: String(reader.result || '') }));
-    };
+    reader.onload = () => setBranding(prev => ({ ...prev, logoUrl: String(reader.result || '') }));
     reader.readAsDataURL(file);
     if (logoInputRef.current) logoInputRef.current.value = '';
   };
@@ -433,7 +434,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
       });
       const data = await res.json();
       if (data.success) {
-        setFeedbackMsg({ type: 'success', text: 'Aparência atualizada! Recarregue o app cliente pra ver.' });
+        setFeedbackMsg({
+          type: 'success',
+          text: isMaster
+            ? 'Aparência global atualizada! Vale pra clientes diretos.'
+            : 'Aparência da sua revenda salva! Só seus clientes verão.'
+        });
       } else {
         setFeedbackMsg({ type: 'error', text: data.error || 'Erro ao salvar.' });
       }
@@ -460,23 +466,43 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const expiring7Users = users.filter(u => getExpirationInfo(u.expirationDate).isExpiring7).length;
   const activeClients = users.filter(u => normalizeUserRole(u.role) === 'UsuarioComum' && !u.isBlocked && !getExpirationInfo(u.expirationDate).isExpired).length;
 
+  // Lista de revendedores (pra filtro do Master)
+  const revendedoresList = useMemo(() => {
+    return users.filter(u => normalizeUserRole(u.role) === 'AdminRevenda');
+  }, [users]);
+
   const filteredUsers = useMemo(() => {
     let list = users;
     if (section === 'clients') list = list.filter(u => normalizeUserRole(u.role) === 'UsuarioComum');
     else if (section === 'revendas') list = list.filter(u => normalizeUserRole(u.role) === 'AdminRevenda');
     else if (section === 'admins') list = list.filter(u => normalizeUserRole(u.role) === 'AdminMaster');
+
+    // Filtro por revendedor (só Master, só em clientes)
+    if (isMaster && section === 'clients' && filterByReseller !== 'all') {
+      if (filterByReseller === 'direct') {
+        list = list.filter(u => !u.createdBy);
+      } else {
+        list = list.filter(u => u.createdBy === filterByReseller);
+      }
+    }
+
     const q = searchQuery.toLowerCase().trim();
     if (!q) return list;
-    return list.filter(u => u.name.toLowerCase().includes(q) || u.username.toLowerCase().includes(q) || (u.email ? u.email.toLowerCase().includes(q) : false));
-  }, [users, section, searchQuery]);
+    return list.filter(u =>
+      u.name.toLowerCase().includes(q) ||
+      u.username.toLowerCase().includes(q) ||
+      (u.email ? u.email.toLowerCase().includes(q) : false) ||
+      (u.createdBy ? u.createdBy.toLowerCase().includes(q) : false)
+    );
+  }, [users, section, searchQuery, isMaster, filterByReseller]);
 
   const menuItems = [
     { id: 'dashboard' as Section, label: 'Dashboard', icon: LayoutDashboard, masterOnly: false },
     { id: 'clients' as Section, label: 'Clientes', icon: Users, badge: clientUsers, masterOnly: false },
-    { id: 'revendas' as Section, label: 'Revendas', icon: Briefcase, badge: revendaUsers, masterOnly: false },
+    { id: 'revendas' as Section, label: 'Revendas', icon: Briefcase, badge: revendaUsers, masterOnly: true },
     { id: 'admins' as Section, label: 'Admins', icon: Crown, badge: masterUsers, masterOnly: true },
     { id: 'create' as Section, label: 'Criar Usuário', icon: UserPlus, masterOnly: false },
-    { id: 'appearance' as Section, label: 'Aparência', icon: Palette, masterOnly: true },
+    { id: 'appearance' as Section, label: 'Aparência', icon: Palette, masterOnly: false },
     { id: 'settings' as Section, label: 'Configurações', icon: SettingsIcon, masterOnly: true },
   ];
 
@@ -507,7 +533,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
           </div>
           <div className="min-w-0">
             <h1 className="font-black text-white text-base truncate">{branding.appName}</h1>
-            <p className="text-[10px] text-slate-400 font-mono">Painel Master</p>
+            <p className="text-[10px] text-slate-400 font-mono truncate">
+              {isRevenda ? 'Painel Revenda' : 'Painel Master'}
+            </p>
           </div>
           <button type="button" onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden p-1.5 text-slate-400">
             <X className="w-5 h-5" />
@@ -535,7 +563,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
               <button
                 key={item.id}
                 type="button"
-                onClick={() => { setSection(item.id); setSidebarOpen(false); setSearchQuery(''); setPendingDeleteId(null); }}
+                onClick={() => { setSection(item.id); setSidebarOpen(false); setSearchQuery(''); setPendingDeleteId(null); setFilterByReseller('all'); }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition border ${active ? 'text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/50 border-transparent'}`}
                 style={active ? { background: `${branding.accentColor}30`, borderColor: `${branding.accentColor}70` } : {}}
               >
@@ -594,10 +622,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
           {section === 'dashboard' && (
             <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
               {[
-                { label: 'Clientes Ativos', value: activeClients, color: 'emerald', icon: UserCheck, target: 'clients' as Section },
+                { label: isRevenda ? 'Meus Clientes Ativos' : 'Clientes Ativos', value: activeClients, color: 'emerald', icon: UserCheck, target: 'clients' as Section },
                 { label: 'Vencendo 7d', value: expiring7Users, color: 'amber', icon: TrendingUp, target: 'clients' as Section },
                 { label: 'Vencidos', value: expiredUsers, color: 'rose', icon: Clock, target: 'clients' as Section },
-                { label: 'Revendas', value: revendaUsers, color: 'blue', icon: Briefcase, target: 'revendas' as Section },
+                { label: 'Revendas', value: revendaUsers, color: 'blue', icon: Briefcase, target: 'revendas' as Section, masterOnly: true },
                 { label: 'Admins', value: masterUsers, color: 'amber', icon: Crown, target: 'admins' as Section, masterOnly: true },
                 { label: 'Bloqueados', value: blockedUsersCount, color: 'slate', icon: UserX, target: null as any },
               ].filter(c => !(c as any).masterOnly || isMaster).map((card, i) => {
@@ -631,22 +659,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             </div>
           )}
 
-          {/* APARÊNCIA */}
-          {section === 'appearance' && isMaster && (
+          {/* APARÊNCIA — agora acessível pra Master e Revenda */}
+          {section === 'appearance' && (
             <div className="max-w-3xl mx-auto space-y-5">
 
-              {/* Header */}
               <div className="p-5 rounded-2xl border flex items-center gap-3" style={{ background: `linear-gradient(135deg, ${branding.accentColor}20, #0f0f17)`, borderColor: `${branding.accentColor}60` }}>
                 <div className="w-12 h-12 rounded-xl flex items-center justify-center border" style={{ background: `${branding.accentColor}25`, borderColor: `${branding.accentColor}60` }}>
                   <Palette className="w-6 h-6" style={{ color: branding.accentColor }} />
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-white">Aparência do App do Cliente</h3>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base font-bold text-white">
+                    {isMaster ? 'Aparência Global' : 'Aparência da Sua Revenda'}
+                  </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Personalize nome, cor, logo e os botões da barra inferior. Clientes veem a mudança ao recarregar.
+                    {isMaster
+                      ? 'Configuração padrão do app. Vale para clientes criados por você (diretos).'
+                      : 'Personalize como seus clientes veem o app. Só eles verão suas mudanças.'}
                   </p>
                 </div>
               </div>
+
+              {isRevenda && (
+                <div className="p-4 rounded-2xl bg-blue-950/20 border border-blue-800/40">
+                  <p className="text-xs text-blue-200 leading-relaxed">
+                    <strong>Sua marca, seus clientes:</strong> o que você configurar aqui só aparece pros clientes que <strong>você cadastrou</strong>. Os clientes do AdminMaster continuam vendo o app original.
+                  </p>
+                </div>
+              )}
 
               {/* Identidade Visual */}
               <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden">
@@ -716,9 +755,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                         placeholder="#dc2626"
                         className="w-28 bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2 text-sm font-mono text-white focus:outline-none"
                       />
-                      <span className="text-[11px] text-slate-500">
-                        Cliente verá botões, destaques e ícones nessa cor
-                      </span>
                     </div>
                   </div>
 
@@ -767,7 +803,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                           )}
                         </div>
                         <p className="text-[10px] text-slate-500">
-                          PNG, JPG, WebP ou SVG • Máximo 400KB • Aparece no login e no header
+                          PNG, JPG, WebP ou SVG • Máximo 400KB
                         </p>
                       </div>
                     </div>
@@ -863,7 +899,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                             </span>
                             {isFixed && (
                               <span className="text-[10px] text-amber-400 font-semibold">
-                                Fixo (não pode ser renomeado/oculto)
+                                Fixo
                               </span>
                             )}
                           </div>
@@ -889,7 +925,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 </div>
               </div>
 
-              {/* Footer de ações */}
               <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-[#0f0f17] border border-slate-800/60">
                 <button
                   type="button"
@@ -905,19 +940,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                   className="px-5 py-2.5 rounded-xl text-sm font-bold text-white shadow-lg flex items-center gap-2 disabled:opacity-50 transition"
                   style={{ background: `linear-gradient(135deg, ${branding.accentColor}, ${branding.accentColor}cc)`, boxShadow: `0 10px 25px -8px ${branding.accentColor}90` }}
                 >
-                  {savingAppearance ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Save className="w-4 h-4" />
-                  )}
+                  {savingAppearance ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                   {savingAppearance ? 'Salvando...' : 'Salvar Alterações'}
                 </button>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-blue-950/20 border border-blue-800/40">
-                <p className="text-xs text-blue-200 leading-relaxed">
-                  <strong>Dica:</strong> Os botões <strong>TV AO VIVO</strong> e <strong>CONFIGURAÇÕES</strong> são fixos — não podem ser renomeados nem ocultados, para garantir que o cliente sempre tenha acesso ao conteúdo principal e ao perfil dele.
-                </p>
               </div>
             </div>
           )}
@@ -926,35 +951,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
           {section === 'create' && (
             <form onSubmit={handleCreate} className="max-w-2xl mx-auto space-y-4 bg-[#0f0f17] border border-slate-800/60 rounded-2xl p-5">
               <div className="flex items-center gap-2 mb-2">
-                <UserPlus className="w-5 h-5 text-emerald-400" />
+                <UserPlus className="w-5 h-5" style={{ color: branding.accentColor }} />
                 <h3 className="text-base font-bold text-white">Novo {isRevenda ? 'Cliente' : 'Usuário'}</h3>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">Nome Completo</label>
-                  <input type="text" value={formName} onChange={e => setFormName(e.target.value)} placeholder="João Silva" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                  <input type="text" value={formName} onChange={e => setFormName(e.target.value)} placeholder="João Silva" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2" style={{ outlineColor: branding.accentColor }} />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">Login (@)</label>
-                  <input type="text" value={formUsername} onChange={e => setFormUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder="joaosilva" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono" />
+                  <input type="text" value={formUsername} onChange={e => setFormUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder="joaosilva" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 font-mono" style={{ outlineColor: branding.accentColor }} />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">E-mail (opcional)</label>
-                  <input type="email" value={formEmail} onChange={e => setFormEmail(e.target.value)} placeholder="cliente@email.com" className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                  <input type="email" value={formEmail} onChange={e => setFormEmail(e.target.value)} placeholder="cliente@email.com" className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none" />
                 </div>
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-xs font-semibold text-slate-300">Senha</label>
-                    <button type="button" onClick={() => { setFormPassword(generatePassword()); setShowPassword(true); }} className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1">
+                    <button type="button" onClick={() => { setFormPassword(generatePassword()); setShowPassword(true); }} className="text-[11px] flex items-center gap-1" style={{ color: branding.accentColor }}>
                       <Sparkles className="w-3 h-3" /> Gerar
                     </button>
                   </div>
                   <div className="relative">
-                    <input type={showPassword ? 'text' : 'password'} value={formPassword} onChange={e => setFormPassword(e.target.value)} placeholder="Mínimo 4 caracteres" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 pr-10 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono" />
+                    <input type={showPassword ? 'text' : 'password'} value={formPassword} onChange={e => setFormPassword(e.target.value)} placeholder="Mínimo 4 caracteres" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 pr-10 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none font-mono" />
                     <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
@@ -964,13 +989,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
 
               <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-700/60 space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-emerald-300 flex items-center gap-1.5">
+                  <label className="text-xs font-semibold flex items-center gap-1.5" style={{ color: branding.accentColor }}>
                     <Calendar className="w-3.5 h-3.5" /> Data de Vencimento
                   </label>
                   <span className="text-[11px] text-slate-400 font-mono">{formExpirationDate ? formatDateDisplay(formExpirationDate) : 'Vitalício'}</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <input type="date" value={formExpirationDate} onChange={e => setFormExpirationDate(e.target.value)} className="bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+                  <input type="date" value={formExpirationDate} onChange={e => setFormExpirationDate(e.target.value)} className="bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2 text-sm text-white focus:outline-none" />
                   {[30, 60, 90, 365].map(d => (
                     <button key={d} type="button" onClick={() => setExpirationDays(d, 'form')} className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold border border-slate-700">+{d === 365 ? '1a' : `${d}d`}</button>
                   ))}
@@ -986,7 +1011,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                       const labels = { UsuarioComum: 'Cliente', AdminRevenda: 'Revenda', AdminMaster: 'Master' };
                       const sel = formRole === r;
                       return (
-                        <label key={r} className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-sm ${sel ? 'bg-emerald-600/15 border-emerald-500/80 text-white' : 'bg-[#15151f] border-slate-700/80 text-slate-300'}`}>
+                        <label key={r} className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer text-sm ${sel ? 'text-white' : 'bg-[#15151f] border-slate-700/80 text-slate-300'}`} style={sel ? { background: `${branding.accentColor}25`, borderColor: branding.accentColor } : {}}>
                           <input type="radio" checked={sel} onChange={() => setFormRole(r)} />
                           <span>{labels[r]}</span>
                         </label>
@@ -1004,7 +1029,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 </div>
               </div>
 
-              <button type="submit" disabled={isSubmittingNewUser} className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50">
+              <button type="submit" disabled={isSubmittingNewUser} className="w-full py-3 rounded-xl text-white font-bold text-sm shadow-lg transition flex items-center justify-center gap-2 disabled:opacity-50" style={{ background: `linear-gradient(135deg, ${branding.accentColor}, ${branding.accentColor}cc)` }}>
                 {isSubmittingNewUser ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><UserPlus className="w-4 h-4" /> Cadastrar e Liberar</>}
               </button>
             </form>
@@ -1028,13 +1053,51 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
           {/* LISTAS */}
           {(section === 'clients' || section === 'revendas' || section === 'admins') && (
             <div className="space-y-4">
-              <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl p-4">
+              <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl p-4 space-y-3">
                 <div className="relative">
                   <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Buscar por nome, @login ou email..." className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none" />
+                  <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Buscar por nome, @login, email ou revenda..." className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl pl-9 pr-9 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none" />
                   {searchQuery && <button type="button" onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"><X className="w-4 h-4" /></button>}
                 </div>
-                <p className="text-[11px] text-slate-500 mt-2 font-mono">{filteredUsers.length} de {users.length}</p>
+
+                {/* Filtro por revendedor (só Master, só em Clientes) */}
+                {isMaster && section === 'clients' && revendedoresList.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 flex items-center gap-1">
+                      <Tag className="w-3 h-3" /> Filtrar:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setFilterByReseller('all')}
+                      className={`px-3 py-1 rounded-lg text-[11px] font-bold transition border ${filterByReseller === 'all' ? 'text-white' : 'bg-slate-800 text-slate-300 border-slate-700'}`}
+                      style={filterByReseller === 'all' ? { background: branding.accentColor, borderColor: branding.accentColor } : {}}
+                    >
+                      Todos
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFilterByReseller('direct')}
+                      className={`px-3 py-1 rounded-lg text-[11px] font-bold transition border ${filterByReseller === 'direct' ? 'text-white' : 'bg-slate-800 text-slate-300 border-slate-700'}`}
+                      style={filterByReseller === 'direct' ? { background: branding.accentColor, borderColor: branding.accentColor } : {}}
+                    >
+                      Diretos (meus)
+                    </button>
+                    {revendedoresList.map(rev => (
+                      <button
+                        key={rev.id}
+                        type="button"
+                        onClick={() => setFilterByReseller(rev.username)}
+                        className={`px-3 py-1 rounded-lg text-[11px] font-bold transition border flex items-center gap-1.5 ${filterByReseller === rev.username ? 'text-white' : 'bg-slate-800 text-slate-300 border-slate-700'}`}
+                        style={filterByReseller === rev.username ? { background: branding.accentColor, borderColor: branding.accentColor } : {}}
+                      >
+                        <Briefcase className="w-3 h-3" />
+                        @{rev.username}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <p className="text-[11px] text-slate-500 font-mono">{filteredUsers.length} de {users.length}</p>
               </div>
 
               {loading && users.length === 0 ? (
@@ -1057,6 +1120,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                     const canBlock = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
                     const canRenew = role === 'UsuarioComum' || isMaster;
 
+                    // Se é cliente, mostrar de qual revenda veio
+                    const showResellerTag = role === 'UsuarioComum' && user.createdBy;
+
                     return (
                       <div key={user.id} className={`p-4 rounded-2xl border-l-4 border ${isPending ? 'bg-rose-950/40 border-rose-500/70 border-l-rose-500' : user.isBlocked ? 'bg-rose-950/20 border-rose-900/50 border-l-rose-600' : expInfo.isExpired ? 'bg-amber-950/15 border-amber-900/40 border-l-amber-500' : role === 'AdminMaster' ? 'bg-[#151515]/70 border-amber-500/30 border-l-amber-500' : role === 'AdminRevenda' ? 'bg-[#151520]/70 border-blue-500/30 border-l-blue-500' : 'bg-[#0f0f17] border-slate-800/80 border-l-emerald-500/60'}`}>
                         <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -1072,6 +1138,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                                   {expInfo.label}
                                 </span>
                                 {user.isBlocked && <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold">Bloqueado</span>}
+
+                                {/* TAG: revenda que criou */}
+                                {showResellerTag && (
+                                  <span
+                                    className="px-2 py-0.5 rounded-full border text-[10px] font-bold flex items-center gap-1"
+                                    style={{ background: `${branding.accentColor}20`, borderColor: `${branding.accentColor}50`, color: branding.accentColor }}
+                                    title={`Cliente criado pela revenda @${user.createdBy}`}
+                                  >
+                                    <Tag className="w-2.5 h-2.5" />
+                                    @{user.createdBy}
+                                  </span>
+                                )}
+
+                                {!showResellerTag && role === 'UsuarioComum' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1">
+                                    <Check className="w-2.5 h-2.5" />
+                                    Direto
+                                  </span>
+                                )}
                               </div>
                               <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-1 flex-wrap">
                                 {user.email && <span className="truncate">{user.email}</span>}
