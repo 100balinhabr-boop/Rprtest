@@ -7,7 +7,7 @@ import {
   UserCheck, UserX, TrendingUp, LayoutDashboard, Settings as SettingsIcon,
   LogOut, ChevronRight, Play, Menu, Shield, Sparkles, Check,
   Palette, GripVertical, Save, Upload, Image as ImageIcon, Type, Palette as PaletteIcon,
-  Tag
+  Tag, ScrollText, Activity, Wifi
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -27,6 +27,14 @@ interface ClientBranding {
   accentColor: string;
   logoUrl: string;
   footerText: string;
+}
+
+interface AuditEntry {
+  ts: string;
+  actor: string;
+  action: string;
+  target: string | null;
+  details: any;
 }
 
 const DEFAULT_CLIENT_TABS: ClientTabConfig[] = [
@@ -81,7 +89,40 @@ export const getExpirationInfo = (expirationDate?: string | null) => {
   return { status: 'active' as const, label: `Até ${formatDateDisplay(expirationDate)}`, isExpired: false, isExpiring7: false };
 };
 
-type Section = 'dashboard' | 'clients' | 'revendas' | 'admins' | 'create' | 'settings' | 'appearance';
+function formatAuditAction(action: string): { label: string; color: string } {
+  const map: Record<string, { label: string; color: string }> = {
+    login_success: { label: 'Login', color: 'emerald' },
+    login_failed: { label: 'Login falhou', color: 'rose' },
+    register: { label: 'Cadastro', color: 'blue' },
+    create_user: { label: 'Criou usuário', color: 'emerald' },
+    update_user: { label: 'Editou usuário', color: 'amber' },
+    delete_user: { label: 'Excluiu usuário', color: 'rose' },
+    block_user: { label: 'Bloqueou', color: 'rose' },
+    unblock_user: { label: 'Desbloqueou', color: 'emerald' },
+    renew_user: { label: 'Renovou', color: 'blue' },
+    update_settings: { label: 'Mudou config', color: 'purple' },
+    save_playlist: { label: 'Salvou lista', color: 'cyan' },
+  };
+  return map[action] || { label: action, color: 'slate' };
+}
+
+function formatRelativeTime(iso: string): string {
+  try {
+    const diff = Date.now() - new Date(iso).getTime();
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return `${sec}s atrás`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}min atrás`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h atrás`;
+    const days = Math.floor(hr / 24);
+    return `${days}d atrás`;
+  } catch {
+    return iso;
+  }
+}
+
+type Section = 'dashboard' | 'clients' | 'revendas' | 'admins' | 'create' | 'settings' | 'appearance' | 'logs';
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, onGoToPlayer }) => {
   const [section, setSection] = useState<Section>('dashboard');
@@ -95,19 +136,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const [settingLoading, setSettingLoading] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  // Filtro por revendedor (só Master usa)
-  const [filterByReseller, setFilterByReseller] = useState<string>('all'); // 'all' | 'direct' | username
+  const [filterByReseller, setFilterByReseller] = useState<string>('all');
 
   const [clientTabs, setClientTabs] = useState<ClientTabConfig[]>(DEFAULT_CLIENT_TABS);
   const [branding, setBranding] = useState<ClientBranding>(DEFAULT_BRANDING);
   const [savingAppearance, setSavingAppearance] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
+  // Logs + Online
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [loadingAudit, setLoadingAudit] = useState(false);
+  const [onlineCount, setOnlineCount] = useState<number>(0);
+  const [onlineUsers, setOnlineUsers] = useState<UserAccount[]>([]);
+  const [loadingOnline, setLoadingOnline] = useState(false);
+  const [auditFilter, setAuditFilter] = useState<string>('all');
+
   const currentAdminRole = normalizeUserRole(currentAdmin.role);
   const isMaster = currentAdminRole === 'AdminMaster';
   const isRevenda = currentAdminRole === 'AdminRevenda';
 
-  // FORM CRIAR
   const [formName, setFormName] = useState('');
   const [formUsername, setFormUsername] = useState('');
   const [formEmail, setFormEmail] = useState('');
@@ -122,7 +169,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmittingNewUser, setIsSubmittingNewUser] = useState(false);
 
-  // FORM EDITAR
   const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
   const [editName, setEditName] = useState('');
   const [editUsername, setEditUsername] = useState('');
@@ -173,7 +219,56 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     }
   };
 
-  useEffect(() => { fetchUsers(); }, []);
+  const fetchAudit = async () => {
+    setLoadingAudit(true);
+    try {
+      const token = getAuthToken();
+      const res = await fetch('/api/admin/audit?limit=200', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.entries)) {
+        setAuditEntries(data.entries);
+      }
+    } catch {
+      // silencioso
+    } finally {
+      setLoadingAudit(false);
+    }
+  };
+
+  const fetchOnline = async () => {
+    setLoadingOnline(true);
+    try {
+      const token = getAuthToken();
+      const res = await fetch('/api/admin/online', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (data.success) {
+        setOnlineCount(data.count || 0);
+        setOnlineUsers(Array.isArray(data.users) ? data.users : []);
+      }
+    } catch {
+      // silencioso
+    } finally {
+      setLoadingOnline(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+    fetchOnline();
+  }, []);
+
+  // Se entrar na seção de logs, busca audit
+  useEffect(() => {
+    if (section === 'logs') fetchAudit();
+  }, [section]);
+
+  // Auto-refresh do online a cada 30s
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (section === 'dashboard') fetchOnline();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [section]);
 
   useEffect(() => {
     if (feedbackMsg) {
@@ -390,7 +485,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     }
   };
 
-  // ========== AÇÕES DA ABA APARÊNCIA ==========
   const handleToggleTabVisible = (tabId: string) => {
     setClientTabs(prev => prev.map(t => t.id === tabId ? { ...t, visible: !t.visible } : t));
   };
@@ -456,7 +550,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     setFeedbackMsg({ type: 'success', text: 'Valores resetados. Clique em Salvar para aplicar.' });
   };
 
-  // Stats
   const totalUsers = users.length;
   const clientUsers = users.filter(u => normalizeUserRole(u.role) === 'UsuarioComum').length;
   const revendaUsers = users.filter(u => normalizeUserRole(u.role) === 'AdminRevenda').length;
@@ -466,7 +559,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const expiring7Users = users.filter(u => getExpirationInfo(u.expirationDate).isExpiring7).length;
   const activeClients = users.filter(u => normalizeUserRole(u.role) === 'UsuarioComum' && !u.isBlocked && !getExpirationInfo(u.expirationDate).isExpired).length;
 
-  // Lista de revendedores (pra filtro do Master)
   const revendedoresList = useMemo(() => {
     return users.filter(u => normalizeUserRole(u.role) === 'AdminRevenda');
   }, [users]);
@@ -477,7 +569,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     else if (section === 'revendas') list = list.filter(u => normalizeUserRole(u.role) === 'AdminRevenda');
     else if (section === 'admins') list = list.filter(u => normalizeUserRole(u.role) === 'AdminMaster');
 
-    // Filtro por revendedor (só Master, só em clientes)
     if (isMaster && section === 'clients' && filterByReseller !== 'all') {
       if (filterByReseller === 'direct') {
         list = list.filter(u => !u.createdBy);
@@ -496,6 +587,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     );
   }, [users, section, searchQuery, isMaster, filterByReseller]);
 
+  const filteredAudit = useMemo(() => {
+    if (auditFilter === 'all') return auditEntries;
+    if (auditFilter === 'logins') return auditEntries.filter(e => e.action.startsWith('login_'));
+    if (auditFilter === 'users') return auditEntries.filter(e => ['create_user', 'update_user', 'delete_user'].includes(e.action));
+    if (auditFilter === 'blocks') return auditEntries.filter(e => ['block_user', 'unblock_user'].includes(e.action));
+    if (auditFilter === 'renewals') return auditEntries.filter(e => e.action === 'renew_user');
+    return auditEntries;
+  }, [auditEntries, auditFilter]);
+
   const menuItems = [
     { id: 'dashboard' as Section, label: 'Dashboard', icon: LayoutDashboard, masterOnly: false },
     { id: 'clients' as Section, label: 'Clientes', icon: Users, badge: clientUsers, masterOnly: false },
@@ -503,13 +603,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     { id: 'admins' as Section, label: 'Admins', icon: Crown, badge: masterUsers, masterOnly: true },
     { id: 'create' as Section, label: 'Criar Usuário', icon: UserPlus, masterOnly: false },
     { id: 'appearance' as Section, label: 'Aparência', icon: Palette, masterOnly: false },
+    { id: 'logs' as Section, label: 'Logs', icon: ScrollText, masterOnly: true },
     { id: 'settings' as Section, label: 'Configurações', icon: SettingsIcon, masterOnly: true },
   ];
 
   const sectionTitle = {
     dashboard: 'Dashboard', clients: 'Clientes', revendas: 'Revendas',
     admins: 'Admins Master', create: 'Criar Usuário', settings: 'Configurações',
-    appearance: 'Aparência do App',
+    appearance: 'Aparência do App', logs: 'Log de Atividades',
   }[section];
 
   return (
@@ -601,10 +702,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             </button>
             <h2 className="text-lg font-black text-white truncate">{sectionTitle}</h2>
           </div>
-          <button type="button" onClick={fetchUsers} disabled={loading} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800/60 hover:bg-slate-700 text-slate-200 border border-slate-700/60">
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">Atualizar</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {section === 'dashboard' && (
+              <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/40 border border-emerald-700/40">
+                <Wifi className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                <span className="text-xs font-bold text-emerald-300">{onlineCount} online</span>
+              </div>
+            )}
+            <button type="button" onClick={section === 'logs' ? fetchAudit : fetchUsers} disabled={loading || loadingAudit} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800/60 hover:bg-slate-700 text-slate-200 border border-slate-700/60">
+              <RefreshCw className={`w-3.5 h-3.5 ${(loading || loadingAudit) ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Atualizar</span>
+            </button>
+          </div>
         </header>
 
         {feedbackMsg && (
@@ -620,49 +729,181 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
           {/* DASHBOARD */}
           {section === 'dashboard' && (
-            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-              {[
-                { label: isRevenda ? 'Meus Clientes Ativos' : 'Clientes Ativos', value: activeClients, color: 'emerald', icon: UserCheck, target: 'clients' as Section },
-                { label: 'Vencendo 7d', value: expiring7Users, color: 'amber', icon: TrendingUp, target: 'clients' as Section },
-                { label: 'Vencidos', value: expiredUsers, color: 'rose', icon: Clock, target: 'clients' as Section },
-                { label: 'Revendas', value: revendaUsers, color: 'blue', icon: Briefcase, target: 'revendas' as Section, masterOnly: true },
-                { label: 'Admins', value: masterUsers, color: 'amber', icon: Crown, target: 'admins' as Section, masterOnly: true },
-                { label: 'Bloqueados', value: blockedUsersCount, color: 'slate', icon: UserX, target: null as any },
-              ].filter(c => !(c as any).masterOnly || isMaster).map((card, i) => {
-                const Icon = card.icon;
-                const colorMap: any = {
-                  emerald: 'from-emerald-950/40 border-emerald-800/40 text-emerald-400',
-                  amber: 'from-amber-950/40 border-amber-800/40 text-amber-400',
-                  rose: 'from-rose-950/40 border-rose-800/40 text-rose-400',
-                  blue: 'from-blue-950/40 border-blue-800/40 text-blue-400',
-                  slate: 'from-slate-900/60 border-slate-800/60 text-slate-400',
-                };
-                return (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => card.target && setSection(card.target as Section)}
-                    disabled={!card.target}
-                    className={`text-left p-5 rounded-2xl bg-gradient-to-br ${colorMap[card.color]} to-[#0b0b12] border transition ${card.target ? 'cursor-pointer hover:scale-[1.02]' : 'cursor-default'}`}
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <div className={`w-12 h-12 rounded-xl bg-${card.color}-500/15 border border-${card.color}-500/30 flex items-center justify-center`}>
-                        <Icon className={`w-6 h-6`} />
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                {[
+                  { label: isRevenda ? 'Meus Clientes Ativos' : 'Clientes Ativos', value: activeClients, color: 'emerald', icon: UserCheck, target: 'clients' as Section },
+                  { label: 'Vencendo 7d', value: expiring7Users, color: 'amber', icon: TrendingUp, target: 'clients' as Section },
+                  { label: 'Vencidos', value: expiredUsers, color: 'rose', icon: Clock, target: 'clients' as Section },
+                  { label: 'Revendas', value: revendaUsers, color: 'blue', icon: Briefcase, target: 'revendas' as Section, masterOnly: true },
+                  { label: 'Admins', value: masterUsers, color: 'amber', icon: Crown, target: 'admins' as Section, masterOnly: true },
+                  { label: 'Bloqueados', value: blockedUsersCount, color: 'slate', icon: UserX, target: null as any },
+                ].filter(c => !(c as any).masterOnly || isMaster).map((card, i) => {
+                  const Icon = card.icon;
+                  const colorMap: any = {
+                    emerald: 'from-emerald-950/40 border-emerald-800/40 text-emerald-400',
+                    amber: 'from-amber-950/40 border-amber-800/40 text-amber-400',
+                    rose: 'from-rose-950/40 border-rose-800/40 text-rose-400',
+                    blue: 'from-blue-950/40 border-blue-800/40 text-blue-400',
+                    slate: 'from-slate-900/60 border-slate-800/60 text-slate-400',
+                  };
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => card.target && setSection(card.target as Section)}
+                      disabled={!card.target}
+                      className={`text-left p-5 rounded-2xl bg-gradient-to-br ${colorMap[card.color]} to-[#0b0b12] border transition ${card.target ? 'cursor-pointer hover:scale-[1.02]' : 'cursor-default'}`}
+                    >
+                      <div className="flex items-start justify-between mb-3">
+                        <div className={`w-12 h-12 rounded-xl bg-${card.color}-500/15 border border-${card.color}-500/30 flex items-center justify-center`}>
+                          <Icon className={`w-6 h-6`} />
+                        </div>
+                        {card.target && <ChevronRight className="w-5 h-5 text-slate-600" />}
                       </div>
-                      {card.target && <ChevronRight className="w-5 h-5 text-slate-600" />}
-                    </div>
-                    <p className="text-xs uppercase font-bold tracking-wider">{card.label}</p>
-                    <p className="text-4xl font-black text-white mt-1">{card.value}</p>
+                      <p className="text-xs uppercase font-bold tracking-wider">{card.label}</p>
+                      <p className="text-4xl font-black text-white mt-1">{card.value}</p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Online agora */}
+              <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-800/60 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-emerald-400" />
+                    <h3 className="text-sm font-bold text-white">Assistindo agora</h3>
+                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-[10px] font-bold text-emerald-300">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      {onlineCount} ativos
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={fetchOnline}
+                    disabled={loadingOnline}
+                    className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${loadingOnline ? 'animate-spin' : ''}`} />
+                    <span className="hidden sm:inline">Atualizar</span>
                   </button>
-                );
-              })}
+                </div>
+                {onlineUsers.length === 0 ? (
+                  <div className="py-10 text-center text-slate-500">
+                    <Wifi className="w-7 h-7 mx-auto mb-2 opacity-50" />
+                    <p className="text-xs">Nenhum cliente logado nos últimos 5 minutos</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-800/60">
+                    {onlineUsers.slice(0, 10).map(u => {
+                      const role = normalizeUserRole(u.role);
+                      return (
+                        <div key={u.id} className="px-5 py-3 flex items-center gap-3">
+                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-black shrink-0 border ${
+                            role === 'AdminMaster' ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                            : role === 'AdminRevenda' ? 'bg-blue-500/15 border-blue-500/40 text-blue-300'
+                            : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                          }`}>
+                            {role === 'AdminMaster' ? <Crown className="w-4 h-4" /> : role === 'AdminRevenda' ? <Briefcase className="w-4 h-4" /> : (u.name?.charAt(0).toUpperCase() || 'U')}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-bold text-white truncate">{u.name}</p>
+                            <p className="text-[10px] text-slate-400 font-mono truncate">@{u.username}</p>
+                          </div>
+                          <span className="text-[10px] text-emerald-300 font-mono shrink-0">
+                            {u.lastSeen ? formatRelativeTime(u.lastSeen) : ''}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
-          {/* APARÊNCIA — agora acessível pra Master e Revenda */}
+          {/* LOGS */}
+          {section === 'logs' && isMaster && (
+            <div className="space-y-4">
+              <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 flex items-center gap-1">
+                    <ScrollText className="w-3 h-3" /> Filtro:
+                  </span>
+                  {[
+                    { id: 'all', label: 'Todos' },
+                    { id: 'logins', label: 'Logins' },
+                    { id: 'users', label: 'Usuários' },
+                    { id: 'blocks', label: 'Bloqueios' },
+                    { id: 'renewals', label: 'Renovações' },
+                  ].map(f => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setAuditFilter(f.id)}
+                      className={`px-3 py-1 rounded-lg text-[11px] font-bold transition border ${auditFilter === f.id ? 'text-white' : 'bg-slate-800 text-slate-300 border-slate-700'}`}
+                      style={auditFilter === f.id ? { background: branding.accentColor, borderColor: branding.accentColor } : {}}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                  <span className="ml-auto text-[11px] text-slate-500 font-mono">{filteredAudit.length} entradas</span>
+                </div>
+              </div>
+
+              {loadingAudit && auditEntries.length === 0 ? (
+                <div className="py-20 flex flex-col items-center text-slate-400 gap-3">
+                  <RefreshCw className="w-7 h-7 animate-spin" style={{ color: branding.accentColor }} />
+                  <span className="text-xs">Carregando log...</span>
+                </div>
+              ) : filteredAudit.length === 0 ? (
+                <div className="py-20 text-center bg-[#0f0f17] border border-slate-800/60 rounded-2xl">
+                  <ScrollText className="w-8 h-8 mx-auto mb-2 text-slate-500" />
+                  <p className="text-sm text-slate-400">Nenhuma ação registrada ainda</p>
+                </div>
+              ) : (
+                <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden divide-y divide-slate-800/60">
+                  {filteredAudit.map((entry, idx) => {
+                    const meta = formatAuditAction(entry.action);
+                    return (
+                      <div key={idx} className="px-4 py-3 flex items-start gap-3">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 bg-${meta.color}-500/15 border border-${meta.color}-500/40 text-${meta.color}-300 mt-0.5`}>
+                          <Activity className="w-4 h-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md bg-${meta.color}-500/15 border border-${meta.color}-500/40 text-${meta.color}-300`}>
+                              {meta.label}
+                            </span>
+                            <span className="text-xs text-white font-mono truncate">@{entry.actor}</span>
+                            {entry.target && (
+                              <>
+                                <ChevronRight className="w-3 h-3 text-slate-500 shrink-0" />
+                                <span className="text-xs text-slate-300 font-mono truncate">@{entry.target}</span>
+                              </>
+                            )}
+                          </div>
+                          {entry.details && Object.keys(entry.details).length > 0 && (
+                            <p className="text-[10px] text-slate-500 font-mono mt-1 truncate">
+                              {JSON.stringify(entry.details)}
+                            </p>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-500 shrink-0 font-mono whitespace-nowrap">
+                          {formatRelativeTime(entry.ts)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* APARÊNCIA */}
           {section === 'appearance' && (
             <div className="max-w-3xl mx-auto space-y-5">
-
               <div className="p-5 rounded-2xl border flex items-center gap-3" style={{ background: `linear-gradient(135deg, ${branding.accentColor}20, #0f0f17)`, borderColor: `${branding.accentColor}60` }}>
                 <div className="w-12 h-12 rounded-xl flex items-center justify-center border" style={{ background: `${branding.accentColor}25`, borderColor: `${branding.accentColor}60` }}>
                   <Palette className="w-6 h-6" style={{ color: branding.accentColor }} />
@@ -687,7 +928,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 </div>
               )}
 
-              {/* Identidade Visual */}
               <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-800/60 flex items-center gap-2">
                   <ImageIcon className="w-4 h-4" style={{ color: branding.accentColor }} />
@@ -695,7 +935,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 </div>
 
                 <div className="p-5 space-y-5">
-                  {/* Nome do App */}
                   <div>
                     <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
                       <Type className="w-3.5 h-3.5" />
@@ -713,7 +952,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                     <p className="text-[10px] text-slate-500 mt-1 font-mono">{branding.appName.length}/30 caracteres</p>
                   </div>
 
-                  {/* Cor Principal */}
                   <div>
                     <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
                       <PaletteIcon className="w-3.5 h-3.5" />
@@ -758,7 +996,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                     </div>
                   </div>
 
-                  {/* Logo */}
                   <div>
                     <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
                       <ImageIcon className="w-3.5 h-3.5" />
@@ -809,7 +1046,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                     </div>
                   </div>
 
-                  {/* Rodapé */}
                   <div>
                     <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-2">
                       <Type className="w-3.5 h-3.5" />
@@ -828,7 +1064,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                 </div>
               </div>
 
-              {/* Botões da Barra */}
               <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-800/60 flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
@@ -1060,7 +1295,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                   {searchQuery && <button type="button" onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"><X className="w-4 h-4" /></button>}
                 </div>
 
-                {/* Filtro por revendedor (só Master, só em Clientes) */}
                 {isMaster && section === 'clients' && revendedoresList.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2 pt-1">
                     <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 flex items-center gap-1">
@@ -1080,7 +1314,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                       className={`px-3 py-1 rounded-lg text-[11px] font-bold transition border ${filterByReseller === 'direct' ? 'text-white' : 'bg-slate-800 text-slate-300 border-slate-700'}`}
                       style={filterByReseller === 'direct' ? { background: branding.accentColor, borderColor: branding.accentColor } : {}}
                     >
-                      Diretos (meus)
+                      Diretos
                     </button>
                     {revendedoresList.map(rev => (
                       <button
@@ -1119,8 +1353,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                     const canDelete = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
                     const canBlock = !isMe && role !== 'AdminMaster' && (isMaster || (isRevenda && role === 'UsuarioComum'));
                     const canRenew = role === 'UsuarioComum' || isMaster;
-
-                    // Se é cliente, mostrar de qual revenda veio
                     const showResellerTag = role === 'UsuarioComum' && user.createdBy;
 
                     return (
@@ -1139,7 +1371,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                                 </span>
                                 {user.isBlocked && <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold">Bloqueado</span>}
 
-                                {/* TAG: revenda que criou */}
                                 {showResellerTag && (
                                   <span
                                     className="px-2 py-0.5 rounded-full border text-[10px] font-bold flex items-center gap-1"
@@ -1161,6 +1392,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                               <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-1 flex-wrap">
                                 {user.email && <span className="truncate">{user.email}</span>}
                                 {user.createdAt && <span className="text-[10px]">Cadastrado {new Date(user.createdAt).toLocaleDateString('pt-BR')}</span>}
+                                {user.lastSeen && (
+                                  <span className="text-[10px] text-emerald-400/80 flex items-center gap-1">
+                                    <Wifi className="w-2.5 h-2.5" />
+                                    Visto {formatRelativeTime(user.lastSeen)}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>
