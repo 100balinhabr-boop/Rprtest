@@ -168,7 +168,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [isPipActive, setIsPipActive] = useState<boolean>(false);
   const [volume, setVolume] = useState<number>(1);
   const [usedFormat, setUsedFormat] = useState<'m3u8' | 'ts'>('m3u8');
-  const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
 
   const [recentlyWatched, setRecentlyWatched] = useState<string[]>(() => {
     try {
@@ -1032,59 +1031,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           )}
         </AnimatePresence>
       </header>
-
-      {/* BANNER DE VENCIMENTO PRÓXIMO — amarelo se ≤5 dias, vermelho se vencido */}
-      {!bannerDismissed && expirationInfo.isExpired && (
-        <div className="sticky top-[57px] z-30 bg-gradient-to-r from-rose-950 to-rose-900 border-b border-rose-500/50 px-4 py-2.5 shadow-lg">
-          <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <AlertCircle className="w-4 h-4 text-rose-300 shrink-0 animate-pulse" />
-              <span className="text-xs text-rose-100 font-medium truncate">
-                <strong className="text-white">Seu acesso venceu.</strong>
-                <span className="hidden sm:inline"> Entre em contato para renovar.</span>
-              </span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[10px] uppercase font-bold text-rose-200 bg-rose-800/60 border border-rose-500/40 px-2 py-1 rounded-lg">
-                Vencido
-              </span>
-              <button
-                onClick={() => setBannerDismissed(true)}
-                className="text-rose-200 hover:text-white p-1"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {!bannerDismissed && !expirationInfo.isExpired && expirationInfo.isExpiringSoon && (
-        <div className="sticky top-[57px] z-30 bg-gradient-to-r from-amber-950 to-amber-900 border-b border-amber-500/50 px-4 py-2.5 shadow-lg">
-          <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <AlertCircle className="w-4 h-4 text-amber-300 shrink-0" />
-              <span className="text-xs text-amber-100 font-medium truncate">
-                <strong className="text-white">
-                  {expirationInfo.daysLeft <= 0 ? 'Seu acesso vence hoje!' : `Seu acesso vence em ${expirationInfo.daysLeft} ${expirationInfo.daysLeft === 1 ? 'dia' : 'dias'}!`}
-                </strong>
-                <span className="hidden sm:inline"> Renove agora para não perder o sinal.</span>
-              </span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[10px] uppercase font-bold text-amber-200 bg-amber-800/60 border border-amber-500/40 px-2 py-1 rounded-lg">
-                {expirationInfo.label}
-              </span>
-              <button
-                onClick={() => setBannerDismissed(true)}
-                className="text-amber-200 hover:text-white p-1"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <AnimatePresence>
         {nowPlaying && (
