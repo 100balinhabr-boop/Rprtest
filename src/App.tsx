@@ -8,6 +8,7 @@ import { ArchitectureDoc } from './components/ArchitectureDoc';
 import { PlaylistImporterModal } from './components/PlaylistImporterModal';
 import { AuthScreen } from './components/AuthScreen';
 import { AdminUsersModal } from './components/AdminUsersModal';
+import { AdminPanel } from './components/AdminPanel';
 import { ClientPortalView } from './components/ClientPortalView';
 import { 
   Play, 
@@ -41,6 +42,7 @@ export default function App() {
   });
   const [isVerifyingAuth, setIsVerifyingAuth] = useState<boolean>(true);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
+  const [showAdminPanel, setShowAdminPanel] = useState<boolean>(false);
   const [appViewMode, setAppViewMode] = useState<'studio' | 'client'>(() => {
     const saved = localStorage.getItem('iptv_app_view_mode');
     if (saved === 'client' || saved === 'studio') return saved;
@@ -95,12 +97,22 @@ export default function App() {
       });
   }, []);
 
+  // Cliente comum sempre no modo cliente
   useEffect(() => {
     if (currentUser && isClienteComum(currentUser.role)) {
       setAppViewMode('client');
       localStorage.setItem('iptv_app_view_mode', 'client');
     }
   }, [currentUser?.id, currentUser?.role]);
+
+  // AdminMaster e AdminRevenda caem direto no painel ao logar
+  useEffect(() => {
+    if (currentUser && isMasterOrRevenda(currentUser.role)) {
+      setShowAdminPanel(true);
+    } else {
+      setShowAdminPanel(false);
+    }
+  }, [currentUser?.id]);
 
   const getSavedFavoriteIds = (userId?: string): string[] => {
     try {
@@ -230,6 +242,8 @@ export default function App() {
     sessionStorage.removeItem('iptv_auth_user');
     loadedUserPlaylistRef.current = null;
     setCurrentUser(null);
+    setShowAdminPanel(false);
+    setIsAdminModalOpen(false);
   };
 
   const handleDownloadAllCode = () => {
@@ -272,6 +286,17 @@ export default function App() {
   const userIsCliente = isClienteComum(currentUser.role);
   const userIsAdmin = isMasterOrRevenda(currentUser.role);
 
+  // Painel Master em tela cheia — abre automaticamente ao logar como AdminMaster/Revenda
+  if (showAdminPanel && userIsAdmin) {
+    return (
+      <AdminPanel
+        currentAdmin={currentUser}
+        onClose={handleLogout}
+        onGoToPlayer={() => setShowAdminPanel(false)}
+      />
+    );
+  }
+
   if (appViewMode === 'client' || userIsCliente) {
     return (
       <ClientPortalView
@@ -301,7 +326,7 @@ export default function App() {
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="font-extrabold text-sm sm:text-base tracking-tight text-white truncate">
-                  RPR TV FREE
+                  RPR TV
                 </span>
                 <span className="hidden sm:inline-block text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                   AO VIVO
@@ -380,7 +405,7 @@ export default function App() {
             {userIsAdmin && (
               <button
                 id="header-admin-users-btn"
-                onClick={() => setIsAdminModalOpen(true)}
+                onClick={() => setShowAdminPanel(true)}
                 className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition shadow-sm border cursor-pointer active:scale-95 ${
                   normalizeUserRole(currentUser.role) === 'AdminMaster'
                     ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
@@ -449,7 +474,7 @@ export default function App() {
               <div
                 onClick={() => {
                   if (userIsAdmin) {
-                    setIsAdminModalOpen(true);
+                    setShowAdminPanel(true);
                   }
                 }}
                 className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs border ${
@@ -514,7 +539,7 @@ export default function App() {
               onOpenImporter={() => setIsImporterOpen(true)}
               onToggleFavorite={handleToggleFavorite}
               currentUser={currentUser}
-              onOpenAdminPanel={() => setIsAdminModalOpen(true)}
+              onOpenAdminPanel={() => setShowAdminPanel(true)}
             />
           </div>
         )}
@@ -559,14 +584,6 @@ export default function App() {
           localStorage.setItem('iptv_auth_user', JSON.stringify(updatedUser));
         }}
       />
-
-      {isAdminModalOpen && currentUser && (
-        <AdminUsersModal
-          isOpen={isAdminModalOpen}
-          onClose={() => setIsAdminModalOpen(false)}
-          currentAdmin={currentUser}
-        />
-      )}
     </div>
   );
-          }
+}
