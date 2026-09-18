@@ -82,18 +82,15 @@ function buildHeroSlides(items: VodItem[]): VodItem[] {
   return [...top3, ...random5].slice(0, 8);
 }
 
-// Detecta se a URL é HLS (m3u8)
 function isHlsUrl(url: string): boolean {
   const lower = url.toLowerCase();
   return (
     lower.includes('.m3u8') ||
-    lower.includes('m3u8') ||
     lower.includes('/hls/') ||
     lower.includes('format=m3u8')
   );
 }
 
-// Detecta se a URL é arquivo direto (mp4/mkv/etc)
 function isDirectVideoUrl(url: string): boolean {
   const lower = url.toLowerCase().split('?')[0];
   return (
@@ -102,9 +99,13 @@ function isDirectVideoUrl(url: string): boolean {
     lower.endsWith('.avi') ||
     lower.endsWith('.mov') ||
     lower.endsWith('.webm') ||
-    lower.endsWith('.ts') ||
     lower.endsWith('.m4v')
   );
+}
+
+// Constrói URL passando pelo proxy do nosso backend (evita CORS e Mixed Content)
+function buildProxyUrl(url: string): string {
+  return `/api/proxy-stream?url=${encodeURIComponent(url)}`;
 }
 
 export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
@@ -459,7 +460,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             hlsRef.current.destroy();
             hlsRef.current = null;
           }
-          videoRef.current.src = tsUrl;
+          videoRef.current.src = buildProxyUrl(tsUrl);
           videoRef.current.play().then(() => {
             setIsPlaying(true);
             setPlayerError(null);
@@ -475,7 +476,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   };
 
   // ============================================================
-  // PLAYER PRINCIPAL — detecta HLS vs MP4/MKV e escolhe o motor
+  // PLAYER PRINCIPAL — sempre passa pelo proxy pra evitar CORS
   // ============================================================
   useEffect(() => {
     if (!nowPlaying || !videoRef.current) return;
@@ -492,17 +493,14 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
 
     const video = videoRef.current;
-    let streamUrl = nowPlaying.streamUrl;
+    const originalUrl = nowPlaying.streamUrl;
+    // SEMPRE usa o proxy do backend. Isso resolve CORS de qualquer origem.
+    const proxyUrl = buildProxyUrl(originalUrl);
 
-    // Se o site é HTTPS e o stream é HTTP, passa pelo proxy pra evitar Mixed Content
-    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && streamUrl.startsWith('http://')) {
-      streamUrl = `/api/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
-    }
+    const isHls = isHlsUrl(originalUrl);
+    const isDirect = isDirectVideoUrl(originalUrl);
 
-    const isHls = isHlsUrl(streamUrl);
-    const isDirect = isDirectVideoUrl(streamUrl);
-
-    // ---------- CASO 1: HLS (m3u8) → usa Hls.js ----------
+    // ---------- HLS via Hls.js ----------
     if (Hls.isSupported() && isHls && !isDirect) {
       const hls = new Hls({
         enableWorker: true,
@@ -526,7 +524,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         capLevelToPlayerSize: true,
       });
 
-      hls.loadSource(streamUrl);
+      hls.loadSource(proxyUrl);
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
@@ -593,15 +591,37 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       };
     }
 
-    // ---------- CASO 2: MP4 / MKV / outros → video nativo ----------
-    // Limpa qualquer HLS anterior e usa o player nativo do navegador
+    // ---------- MP4/MKV/outros → video nativo via proxy ----------
     const onLoaded = () => {
       setIsBuffering(false);
       video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
     };
     const onErr = () => {
       setIsBuffering(false);
-      setPlayerError('Não foi possível reproduzir este arquivo. Formato ou codec incompatível.');
+      setPlayerError('Não foi possível reproduzir. Tentando via HLS...');
+      // Fallback: tenta HLS.js mesmo se não tem .m3u8 na URL
+      if (Hls.isSupported()) {
+        try {
+          const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+          hls.loadSource(proxyUrl);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            setPlayerError(null);
+            video.play().then(() => setIsPlaying(true)).catch(() => {});
+          });
+          hls.on(Hls.Events.ERROR, (_, data) => {
+            if (data.fatal) {
+              hls.destroy();
+              setPlayerError('Este arquivo usa um codec não suportado pelo navegador (ex: H.265). No app Android nativo rodaria normal.');
+            }
+          });
+          hlsRef.current = hls;
+        } catch {
+          setPlayerError('Este arquivo usa um codec não suportado pelo navegador.');
+        }
+      } else {
+        setPlayerError('Este arquivo usa um codec não suportado pelo navegador.');
+      }
     };
     const onWaiting = () => setIsBuffering(true);
     const onPlaying = () => setIsBuffering(false);
@@ -612,11 +632,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     video.addEventListener('playing', onPlaying);
     video.addEventListener('canplay', onLoaded);
 
-    // Se a URL do proxy foi usada, mantém; senão usa a original
     try {
-      video.src = streamUrl;
+      video.src = proxyUrl;
       video.load();
-      // Tenta dar play (alguns navegadores precisam de interação)
       video.play().then(() => setIsPlaying(true)).catch(() => {
         setIsPlaying(false);
       });
@@ -1175,7 +1193,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </AnimatePresence>
       </header>
 
-      {/* PLAYER INLINE ÚNICO — AO VIVO + VOD */}
+      {/* PLAYER INLINE */}
       <AnimatePresence>
         {nowPlaying && (
           <motion.div
@@ -1272,7 +1290,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               {playerError && !isReconnecting && (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 p-4 text-center">
                   <AlertCircle className="w-8 h-8 text-red-500 mb-2" />
-                  <p className="text-xs font-semibold text-white mb-2">{playerError}</p>
+                  <p className="text-xs font-semibold text-white mb-2 max-w-md">{playerError}</p>
                   <button
                     onClick={() => {
                       if (videoRef.current) {
