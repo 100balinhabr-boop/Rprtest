@@ -89,7 +89,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
 
-  // Novos states — features do player
   const [lastChannel, setLastChannel] = useState<Channel | null>(null);
   const [controlsVisible, setControlsVisible] = useState<boolean>(true);
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
@@ -326,7 +325,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return () => clearInterval(interval);
   }, [activeTab]);
 
-  // Auto-hide controls após 3.5s
   const scheduleHideControls = () => {
     if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
     controlsTimerRef.current = setTimeout(() => {
@@ -351,14 +349,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     };
   }, [isPlaying]);
 
-  // Fullscreen listener
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
-  // PiP listener
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -372,14 +368,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     };
   }, [videoRef.current]);
 
-  // Aplica brilho
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.style.filter = `brightness(${brightness})`;
     }
   }, [brightness]);
 
-  // Aplica volume
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.volume = volume;
@@ -387,7 +381,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
   }, [volume, isMuted]);
 
-  // Cleanup
   useEffect(() => {
     return () => {
       if (hlsRef.current) {
@@ -398,7 +391,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     };
   }, []);
 
-  // Fallback de formato
   const tryFormatFallback = () => {
     if (!nowPlaying) return;
     if (usedFormat === 'm3u8' && nowPlaying.streamUrl.includes('.m3u8')) {
@@ -427,7 +419,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
   };
 
-  // Video playback controller
   useEffect(() => {
     if (!nowPlaying || !videoRef.current) return;
 
@@ -554,6 +545,11 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const handlePlayChannel = (channel: Channel) => {
     if (nowPlaying?.item && (nowPlaying.item as any).id !== channel.id && nowPlaying.type === 'live') {
       setLastChannel(nowPlaying.item as Channel);
+    }
+    try {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {
+      window.scrollTo(0, 0);
     }
     setNowPlaying({
       title: channel.name,
@@ -964,6 +960,282 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           )}
         </AnimatePresence>
       </header>
+
+      {/* PLAYER INLINE — fica no topo quando um canal ao vivo está tocando */}
+      <AnimatePresence>
+        {nowPlaying && nowPlaying.type === 'live' && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="sticky top-16 z-30 w-full bg-black border-b border-slate-800/80 shadow-lg"
+          >
+            <div
+              ref={playerContainerRef}
+              onMouseMove={showControlsTemporarily}
+              onTouchStart={showControlsTemporarily}
+              onClick={showControlsTemporarily}
+              className="relative w-full max-w-4xl mx-auto aspect-video max-h-[45vh] bg-black overflow-hidden group"
+            >
+              <video
+                ref={videoRef}
+                className="w-full h-full object-contain bg-black"
+                playsInline
+                autoPlay
+                controls={false}
+                onClick={() => {
+                  if (controlsVisible) {
+                    if (videoRef.current) {
+                      if (isPlaying) videoRef.current.pause();
+                      else videoRef.current.play();
+                      setIsPlaying(!isPlaying);
+                    }
+                  } else {
+                    showControlsTemporarily();
+                  }
+                }}
+              />
+
+              <AnimatePresence>
+                {controlsVisible && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute top-0 left-0 right-0 z-20 p-2 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between text-white"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse shrink-0" />
+                      <span className="text-xs font-bold truncate">{nowPlaying.title}</span>
+                      <span className="text-[10px] bg-red-600/40 text-red-300 border border-red-500/40 px-1.5 py-0.5 rounded uppercase shrink-0">
+                        AO VIVO
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={toggleFullscreen}
+                        className="p-1.5 rounded-lg bg-black/60 hover:bg-black/80 text-slate-300 hover:text-white transition cursor-pointer"
+                        title="Tela Cheia"
+                      >
+                        {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                      </button>
+                      <button
+                        onClick={() => setNowPlaying(null)}
+                        className="p-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white transition cursor-pointer"
+                        title="Fechar Player"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <AnimatePresence>
+                {isReconnecting && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    className="absolute top-12 left-1/2 -translate-x-1/2 z-30 bg-red-950/95 border border-red-500/50 px-3 py-2 rounded-xl flex items-center gap-2 text-red-200 text-[11px] shadow-lg pointer-events-none"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-red-400 animate-spin" />
+                    <span className="font-semibold">Reconectando {reconnectAttempt}/3</span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {isBuffering && !isReconnecting && (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 pointer-events-none">
+                  <div className="w-10 h-10 border-4 border-red-600 border-t-transparent rounded-full animate-spin" />
+                </div>
+              )}
+
+              {playerError && !isReconnecting && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 p-4 text-center">
+                  <AlertCircle className="w-8 h-8 text-red-500 mb-2" />
+                  <p className="text-xs font-semibold text-white mb-2">{playerError}</p>
+                  <button
+                    onClick={() => {
+                      if (videoRef.current) {
+                        videoRef.current.load();
+                        setPlayerError(null);
+                      }
+                    }}
+                    className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white rounded-lg text-[11px] font-bold cursor-pointer"
+                  >
+                    Tentar Novamente
+                  </button>
+                </div>
+              )}
+
+              <AnimatePresence>
+                {controlsVisible && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 20 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute bottom-0 left-0 right-0 z-20 px-2 pt-6 pb-2 bg-gradient-to-t from-black/95 via-black/60 to-transparent"
+                  >
+                    <AnimatePresence>
+                      {showBrightness && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 10 }}
+                          className="absolute bottom-14 left-2 bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl px-2.5 py-1.5 flex items-center gap-2 shadow-xl"
+                        >
+                          <Sun className="w-3.5 h-3.5 text-yellow-400" />
+                          <input
+                            type="range"
+                            min="0.3"
+                            max="1.5"
+                            step="0.05"
+                            value={brightness}
+                            onChange={(e) => setBrightness(parseFloat(e.target.value))}
+                            className="w-24 h-1 accent-yellow-400"
+                          />
+                          <span className="text-[10px] text-yellow-300 font-mono w-9 text-right">
+                            {Math.round(brightness * 100)}%
+                          </span>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    <AnimatePresence>
+                      {showQualityMenu && hlsLevels.length > 0 && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 10 }}
+                          className="absolute bottom-14 right-2 bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl py-1 shadow-xl min-w-[120px]"
+                        >
+                          <div className="px-2.5 py-0.5 text-[10px] text-slate-400 font-semibold uppercase tracking-wide border-b border-slate-800">
+                            Qualidade
+                          </div>
+                          <button
+                            onClick={() => changeQuality(-1)}
+                            className={`w-full text-left px-2.5 py-1 text-xs hover:bg-slate-800 transition flex items-center justify-between ${
+                              currentLevel === -1 ? 'text-red-400 font-bold' : 'text-slate-200'
+                            }`}
+                          >
+                            <span>Auto</span>
+                            {currentLevel === -1 && <Check className="w-3 h-3" />}
+                          </button>
+                          {hlsLevels.slice().reverse().map((lvl) => (
+                            <button
+                              key={lvl.index}
+                              onClick={() => changeQuality(lvl.index)}
+                              className={`w-full text-left px-2.5 py-1 text-xs hover:bg-slate-800 transition flex items-center justify-between ${
+                                currentLevel === lvl.index ? 'text-red-400 font-bold' : 'text-slate-200'
+                              }`}
+                            >
+                              <span>{lvl.name}</span>
+                              {currentLevel === lvl.index && <Check className="w-3 h-3" />}
+                            </button>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => {
+                            if (videoRef.current) {
+                              if (isPlaying) { videoRef.current.pause(); setIsPlaying(false); }
+                              else { videoRef.current.play(); setIsPlaying(true); }
+                            }
+                          }}
+                          className="w-8 h-8 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition active:scale-95 shadow-md"
+                        >
+                          {isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current ml-0.5" />}
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            if (videoRef.current) {
+                              videoRef.current.muted = !isMuted;
+                              setIsMuted(!isMuted);
+                            }
+                          }}
+                          className="p-1.5 text-slate-300 hover:text-white transition"
+                        >
+                          {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
+                        </button>
+
+                        {!isMuted && (
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={volume}
+                            onChange={(e) => setVolume(parseFloat(e.target.value))}
+                            className="hidden sm:block w-16 h-1 accent-red-500"
+                          />
+                        )}
+
+                        {lastChannel && (
+                          <button
+                            onClick={handleZapLast}
+                            className="hidden sm:flex items-center gap-1 px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-[11px] font-mono transition"
+                            title="Canal anterior"
+                          >
+                            <SkipBack className="w-3 h-3" />
+                            Zap
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => setShowBrightness(!showBrightness)}
+                          className={`p-1.5 rounded-lg transition ${
+                            showBrightness ? 'bg-yellow-500/30 text-yellow-300' : 'bg-white/10 hover:bg-white/20 text-white'
+                          }`}
+                          title="Brilho"
+                        >
+                          <Sun className="w-3.5 h-3.5" />
+                        </button>
+
+                        {hlsLevels.length > 0 && (
+                          <button
+                            onClick={() => setShowQualityMenu(!showQualityMenu)}
+                            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-mono transition ${
+                              showQualityMenu ? 'bg-red-600/40 text-red-200' : 'bg-white/10 hover:bg-white/20 text-red-300'
+                            }`}
+                          >
+                            <Gauge className="w-3 h-3" />
+                            <span className="hidden sm:inline">
+                              {currentLevel === -1 ? 'Auto' : hlsLevels.find((l) => l.index === currentLevel)?.name || 'Auto'}
+                            </span>
+                          </button>
+                        )}
+
+                        <button
+                          onClick={togglePiP}
+                          className={`p-1.5 rounded-lg transition hidden sm:block ${
+                            isPipActive ? 'bg-red-600/40 text-red-300' : 'bg-white/10 hover:bg-white/20 text-white'
+                          }`}
+                          title="Picture-in-Picture"
+                        >
+                          <PictureInPicture2 className="w-3.5 h-3.5" />
+                        </button>
+
+                        <div className="hidden sm:block text-[11px] text-slate-300 font-medium px-2">
+                          {nowPlaying.category}
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-3 sm:px-4 py-4 pb-28 relative z-10">
         {activeTab === 'movies' && (
@@ -1663,8 +1935,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
       </nav>
 
+      {/* MODAL DO PLAYER — só pra VOD (filmes/séries). Ao vivo usa o player inline acima */}
       <AnimatePresence>
-        {nowPlaying && (
+        {nowPlaying && nowPlaying.type === 'vod' && (
           <motion.div
             initial={{ opacity: 0, y: 50 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1672,10 +1945,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-end sm:justify-center p-0 sm:p-4"
           >
             <div
-              ref={playerContainerRef}
-              onMouseMove={showControlsTemporarily}
-              onTouchStart={showControlsTemporarily}
-              onClick={showControlsTemporarily}
               className="relative w-full max-w-4xl mx-auto bg-black rounded-none sm:rounded-2xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col aspect-video max-h-[85vh]"
             >
               <div className="absolute top-0 left-0 right-0 z-20 p-3 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between text-white">
@@ -1685,7 +1954,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     {nowPlaying.title}
                   </span>
                   <span className="hidden sm:inline-block text-[10px] bg-red-600/40 text-red-300 border border-red-500/40 px-2 py-0.5 rounded uppercase">
-                    {nowPlaying.type === 'live' ? 'AO VIVO' : 'VOD'}
+                    VOD
                   </span>
                 </div>
 
@@ -1715,14 +1984,10 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 autoPlay
                 controls={false}
                 onClick={() => {
-                  if (controlsVisible) {
-                    if (videoRef.current) {
-                      if (isPlaying) videoRef.current.pause();
-                      else videoRef.current.play();
-                      setIsPlaying(!isPlaying);
-                    }
-                  } else {
-                    showControlsTemporarily();
+                  if (videoRef.current) {
+                    if (isPlaying) videoRef.current.pause();
+                    else videoRef.current.play();
+                    setIsPlaying(!isPlaying);
                   }
                 }}
               />
@@ -1747,7 +2012,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/50 pointer-events-none">
                   <div className="w-12 h-12 border-4 border-red-600 border-t-transparent rounded-full animate-spin mb-3 shadow-lg" />
                   <span className="text-xs font-semibold text-white bg-black/70 px-3 py-1 rounded-full">
-                    Carregando fluxo HLS...
+                    Carregando...
                   </span>
                 </div>
               )}
@@ -1770,169 +2035,42 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               )}
 
-              <AnimatePresence>
-                {controlsVisible && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 20 }}
-                    transition={{ duration: 0.2 }}
-                    className="absolute bottom-0 left-0 right-0 z-20 px-3 pt-8 pb-3 bg-gradient-to-t from-black/95 via-black/60 to-transparent"
+              <div className="absolute bottom-0 left-0 right-0 z-20 p-3 bg-gradient-to-t from-black/90 via-black/40 to-transparent flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => {
+                      if (videoRef.current) {
+                        if (isPlaying) {
+                          videoRef.current.pause();
+                          setIsPlaying(false);
+                        } else {
+                          videoRef.current.play();
+                          setIsPlaying(true);
+                        }
+                      }
+                    }}
+                    className="w-9 h-9 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition active:scale-95 shadow-md"
                   >
-                    <AnimatePresence>
-                      {showBrightness && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 10 }}
-                          className="absolute bottom-16 left-3 bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl px-3 py-2 flex items-center gap-2 shadow-xl"
-                        >
-                          <Sun className="w-4 h-4 text-yellow-400" />
-                          <input
-                            type="range"
-                            min="0.3"
-                            max="1.5"
-                            step="0.05"
-                            value={brightness}
-                            onChange={(e) => setBrightness(parseFloat(e.target.value))}
-                            className="w-28 h-1 accent-yellow-400"
-                          />
-                          <span className="text-[10px] text-yellow-300 font-mono w-10 text-right">
-                            {Math.round(brightness * 100)}%
-                          </span>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                    {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+                  </button>
 
-                    <AnimatePresence>
-                      {showQualityMenu && hlsLevels.length > 0 && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 10 }}
-                          className="absolute bottom-16 right-3 bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl py-1.5 shadow-xl min-w-[130px]"
-                        >
-                          <div className="px-3 py-1 text-[10px] text-slate-400 font-semibold uppercase tracking-wide border-b border-slate-800">
-                            Qualidade
-                          </div>
-                          <button
-                            onClick={() => changeQuality(-1)}
-                            className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 transition flex items-center justify-between ${
-                              currentLevel === -1 ? 'text-red-400 font-bold' : 'text-slate-200'
-                            }`}
-                          >
-                            <span>Auto</span>
-                            {currentLevel === -1 && <Check className="w-3 h-3" />}
-                          </button>
-                          {hlsLevels.slice().reverse().map((lvl) => (
-                            <button
-                              key={lvl.index}
-                              onClick={() => changeQuality(lvl.index)}
-                              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 transition flex items-center justify-between ${
-                                currentLevel === lvl.index ? 'text-red-400 font-bold' : 'text-slate-200'
-                              }`}
-                            >
-                              <span>{lvl.name}</span>
-                              {currentLevel === lvl.index && <Check className="w-3 h-3" />}
-                            </button>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                  <button
+                    onClick={() => {
+                      if (videoRef.current) {
+                        videoRef.current.muted = !isMuted;
+                        setIsMuted(!isMuted);
+                      }
+                    }}
+                    className="p-1.5 text-slate-300 hover:text-white transition"
+                  >
+                    {isMuted ? <VolumeX className="w-5 h-5 text-red-400" /> : <Volume2 className="w-5 h-5" />}
+                  </button>
+                </div>
 
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 sm:gap-2">
-                        <button
-                          onClick={() => {
-                            if (videoRef.current) {
-                              if (isPlaying) { videoRef.current.pause(); setIsPlaying(false); }
-                              else { videoRef.current.play(); setIsPlaying(true); }
-                            }
-                          }}
-                          className="w-9 h-9 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition active:scale-95 shadow-md"
-                        >
-                          {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            if (videoRef.current) {
-                              videoRef.current.muted = !isMuted;
-                              setIsMuted(!isMuted);
-                            }
-                          }}
-                          className="p-1.5 text-slate-300 hover:text-white transition"
-                        >
-                          {isMuted ? <VolumeX className="w-5 h-5 text-red-400" /> : <Volume2 className="w-5 h-5" />}
-                        </button>
-
-                        {!isMuted && (
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.05"
-                            value={volume}
-                            onChange={(e) => setVolume(parseFloat(e.target.value))}
-                            className="hidden sm:block w-16 h-1 accent-red-500"
-                          />
-                        )}
-
-                        {nowPlaying.type === 'live' && lastChannel && (
-                          <button
-                            onClick={handleZapLast}
-                            className="hidden sm:flex items-center gap-1 px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-mono transition"
-                            title="Canal anterior"
-                          >
-                            <SkipBack className="w-3.5 h-3.5" />
-                            Zap
-                          </button>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-1.5 sm:gap-2">
-                        <button
-                          onClick={() => setShowBrightness(!showBrightness)}
-                          className={`p-1.5 sm:p-2 rounded-lg transition ${
-                            showBrightness ? 'bg-yellow-500/30 text-yellow-300' : 'bg-white/10 hover:bg-white/20 text-white'
-                          }`}
-                          title="Brilho"
-                        >
-                          <Sun className="w-4 h-4" />
-                        </button>
-
-                        {hlsLevels.length > 0 && (
-                          <button
-                            onClick={() => setShowQualityMenu(!showQualityMenu)}
-                            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-mono transition ${
-                              showQualityMenu ? 'bg-red-600/40 text-red-200' : 'bg-white/10 hover:bg-white/20 text-red-300'
-                            }`}
-                          >
-                            <Gauge className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">
-                              {currentLevel === -1 ? 'Auto' : hlsLevels.find((l) => l.index === currentLevel)?.name || 'Auto'}
-                            </span>
-                          </button>
-                        )}
-
-                        <button
-                          onClick={togglePiP}
-                          className={`p-1.5 sm:p-2 rounded-lg transition hidden sm:block ${
-                            isPipActive ? 'bg-red-600/40 text-red-300' : 'bg-white/10 hover:bg-white/20 text-white'
-                          }`}
-                          title="Picture-in-Picture"
-                        >
-                          <PictureInPicture2 className="w-4 h-4" />
-                        </button>
-
-                        <div className="hidden sm:block text-xs text-slate-300 font-medium px-2">
-                          {nowPlaying.category}
-                        </div>
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                <div className="text-xs text-slate-300 font-medium">
+                  {nowPlaying.category}
+                </div>
+              </div>
             </div>
           </motion.div>
         )}
