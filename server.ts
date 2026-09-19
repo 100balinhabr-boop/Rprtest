@@ -527,18 +527,15 @@ app.post("/api/auth/login", (req, res) => {
   const user = users.find(u => u.username.toLowerCase() === String(username).trim().toLowerCase());
   if (!user) {
     registerLoginFailure(ip);
-    auditLog(String(username), "login_failed", undefined, { reason: "user_not_found" });
     return res.status(401).json({ success: false, error: "Usuário ou senha incorretos." });
   }
 
   if (user.isBlocked) {
-    auditLog(user.username, "login_failed", undefined, { reason: "blocked" });
     return res.status(403).json({ success: false, error: "Esta conta foi bloqueada pelo administrador. Acesso negado." });
   }
 
   const role = normalizeRole(user.role);
   if (role !== "AdminMaster" && isDateExpired(user.expirationDate)) {
-    auditLog(user.username, "login_failed", undefined, { reason: "expired" });
     return res.status(403).json({
       success: false, isExpired: true, expirationDate: user.expirationDate,
       error: `Seu acesso venceu em ${formatDateBR(user.expirationDate)}. Entre em contato com seu revendedor ou suporte para renovar o acesso.`
@@ -548,7 +545,6 @@ app.post("/api/auth/login", (req, res) => {
   const calculatedHash = hashPassword(String(password), user.salt);
   if (calculatedHash !== user.passwordHash) {
     registerLoginFailure(ip);
-    auditLog(user.username, "login_failed", undefined, { reason: "wrong_password" });
     return res.status(401).json({ success: false, error: "Usuário ou senha incorretos." });
   }
 
@@ -558,15 +554,6 @@ app.post("/api/auth/login", (req, res) => {
   const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
   sessions.set(token, { userId: user.id, expiresAt });
   saveSessions(sessions);
-
-  // Marca lastSeen APENAS no login (não causa loop porque roda 1x)
-  const idx = users.findIndex(u => u.id === user.id);
-  if (idx !== -1) {
-    users[idx].lastSeen = new Date().toISOString();
-    saveUsers(users);
-  }
-
-  auditLog(user.username, "login_success");
 
   return res.json({
     success: true, user: formatSafeUser(user), token,
@@ -616,7 +603,6 @@ app.post("/api/auth/register", (req, res) => {
 
   users.push(newUser);
   saveUsers(users);
-  auditLog(cleanUsername, "register");
 
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
@@ -665,7 +651,7 @@ app.get("/api/auth/me", (req, res) => {
     });
   }
 
-  // NÃO grava lastSeen aqui — evita loop de reload do Vite/tsx
+  // IMPORTANTE: não grava nada no disco aqui — evita loop de reload do Vite
   return res.json({ success: true, user: formatSafeUser(user) });
 });
 
@@ -710,7 +696,6 @@ app.post("/api/user/playlist", (req, res) => {
   users[index].playlistName = cleanName;
   users[index].playlistUpdatedAt = new Date().toISOString();
   saveUsers(users);
-  auditLog(user.username, "save_playlist", undefined, { name: cleanName });
 
   return res.json({
     success: true,
@@ -833,7 +818,6 @@ app.post("/api/admin/users", (req, res) => {
 
   users.push(newUser);
   saveUsers(users);
-  auditLog(adminUser.username, "create_user", cleanUsername, { role: assignedRole });
 
   return res.status(201).json({
     success: true,
@@ -873,7 +857,6 @@ app.post("/api/admin/users/:id/toggle-block", (req, res) => {
   const nowBlocked = !users[targetIndex].isBlocked;
   users[targetIndex].isBlocked = nowBlocked;
   saveUsers(users);
-  auditLog(adminUser.username, nowBlocked ? "block_user" : "unblock_user", users[targetIndex].username);
 
   if (nowBlocked) {
     for (const [token, session] of sessions.entries()) {
@@ -992,7 +975,6 @@ app.put("/api/admin/users/:id", (req, res) => {
 
   users[targetIndex] = currentUser;
   saveUsers(users);
-  auditLog(adminUser.username, "update_user", currentUser.username);
 
   return res.json({
     success: true,
@@ -1041,7 +1023,6 @@ app.post("/api/admin/users/:id/renew", (req, res) => {
   currentUser.expirationDate = finalDateStr;
   users[targetIndex] = currentUser;
   saveUsers(users);
-  auditLog(adminUser.username, "renew_user", currentUser.username, { newDate: finalDateStr });
 
   const displayMsg = finalDateStr
     ? `Acesso de @${currentUser.username} renovado até ${formatDateBR(finalDateStr)} com sucesso!`
@@ -1087,7 +1068,6 @@ app.delete("/api/admin/users/:id", (req, res) => {
 
   users = users.filter(u => u.id !== targetId);
   saveUsers(users);
-  auditLog(adminUser.username, "delete_user", target.username, { role: targetRole });
 
   for (const [token, session] of sessions.entries()) {
     if (session.userId === targetId) sessions.delete(token);
@@ -1133,7 +1113,6 @@ app.post("/api/admin/settings", (req, res) => {
   }
 
   saveSettings(settings);
-  auditLog(adminUser.username, "update_settings", undefined, { scope: isMaster ? "global" : "reseller" });
 
   return res.json({
     success: true,
@@ -1142,10 +1121,6 @@ app.post("/api/admin/settings", (req, res) => {
   });
 });
 
-// ----------------------------------------------------
-// Audit + Stats
-// ----------------------------------------------------
-
 app.get("/api/admin/audit", (req, res) => {
   const { adminUser, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
@@ -1153,31 +1128,6 @@ app.get("/api/admin/audit", (req, res) => {
   }
   const limit = Math.max(1, Math.min(500, parseInt(String(req.query.limit)) || 100));
   return res.json({ success: true, entries: readAuditLog(limit) });
-});
-
-app.get("/api/admin/online", (req, res) => {
-  const { adminUser, isMaster, error } = getAuthenticatedAdmin(req);
-  if (error || !adminUser) {
-    return res.status(403).json({ success: false, error: error || "Não autorizado." });
-  }
-
-  const users = loadUsers();
-  const fiveMinAgo = Date.now() - 5 * 60 * 1000;
-
-  let list = users.filter(u => {
-    if (!u.lastSeen) return false;
-    return new Date(u.lastSeen).getTime() >= fiveMinAgo;
-  });
-
-  if (!isMaster) {
-    list = list.filter(u => u.createdBy === adminUser.username);
-  }
-
-  return res.json({
-    success: true,
-    count: list.length,
-    users: list.map(formatSafeUser),
-  });
 });
 
 app.get("/api/health", (req, res) => {
@@ -1715,7 +1665,18 @@ app.get("/api/proxy-stream", async (req, res) => {
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        watch: {
+          ignored: [
+            '**/data/**',
+            '**/*.log',
+            '**/node_modules/**',
+            '**/.git/**',
+          ],
+        },
+        hmr: process.env.DISABLE_HMR !== 'true',
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
