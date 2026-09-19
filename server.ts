@@ -559,7 +559,6 @@ app.post("/api/auth/login", (req, res) => {
   sessions.set(token, { userId: user.id, expiresAt });
   saveSessions(sessions);
 
-  // Marca lastSeen no login
   const idx = users.findIndex(u => u.id === user.id);
   if (idx !== -1) {
     users[idx].lastSeen = new Date().toISOString();
@@ -665,7 +664,6 @@ app.get("/api/auth/me", (req, res) => {
     });
   }
 
-  // Atualiza lastSeen
   const idx = users.findIndex(u => u.id === user.id);
   if (idx !== -1) {
     users[idx].lastSeen = new Date().toISOString();
@@ -1161,7 +1159,6 @@ app.get("/api/admin/audit", (req, res) => {
   return res.json({ success: true, entries: readAuditLog(limit) });
 });
 
-// Online users: logados nos últimos 5 minutos
 app.get("/api/admin/online", (req, res) => {
   const { adminUser, isMaster, error } = getAuthenticatedAdmin(req);
   if (error || !adminUser) {
@@ -1177,7 +1174,6 @@ app.get("/api/admin/online", (req, res) => {
   });
 
   if (!isMaster) {
-    // Revenda só vê os próprios clientes
     list = list.filter(u => u.createdBy === adminUser.username);
   }
 
@@ -1193,8 +1189,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // ----------------------------------------------------
-// Playlist Loader / Xtream Engine / Proxy
-// (inalterado — mantém igual ao que já estava)
+// Playlist / Xtream / Proxy
 // ----------------------------------------------------
 
 interface ParsedChannel {
@@ -1302,12 +1297,11 @@ app.post("/api/load-playlist", async (req, res) => {
         }
       }
     } catch (e: any) {
-      console.warn(`[Xtream API fallback] Erro na API Xtream (${e.message}), tentando leitura por streaming M3U completo...`);
+      console.warn(`[Xtream API fallback] Erro na API Xtream (${e.message})...`);
     }
   }
 
   try {
-    console.log(`[M3U Streaming] Baixando e processando M3U completa (mode: ${mode}, max: ${effectiveMax}): ${trimmedUrl}`);
     const response = await fetch(trimmedUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 IPTVSmarters"
@@ -1413,7 +1407,7 @@ app.post("/api/load-playlist", async (req, res) => {
       source: "m3u_stream",
       loadedCount: channels.length,
       stats: { live: countLive, movies: countMovies, series: countSeries, total: channels.length },
-      message: `Lista inteira carregada com sucesso! ${channels.length} itens totais (${countLive} canais ao vivo, ${countMovies} filmes e ${countSeries} séries).`,
+      message: `Lista inteira carregada com sucesso! ${channels.length} itens totais.`,
       channels, groups
     });
 
@@ -1425,16 +1419,7 @@ app.post("/api/load-playlist", async (req, res) => {
   }
 });
 
-// ----------------------------------------------------
-// Smart On-Demand Xtream Codes Engine
-// ----------------------------------------------------
-
-interface XtreamCacheItem {
-  timestamp: number;
-  data: any;
-}
-
-const xtreamMemoryCache = new Map<string, XtreamCacheItem>();
+const xtreamMemoryCache = new Map<string, { timestamp: number; data: any }>();
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
 function getFromXtreamCache<T>(key: string): T | null {
@@ -1487,7 +1472,7 @@ app.post("/api/xtream/categories", async (req, res) => {
     if (!response.ok) return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
 
     const data = await response.json();
-    if (!Array.isArray(data)) return res.status(500).json({ success: false, error: "Resposta inesperada do servidor Xtream." });
+    if (!Array.isArray(data)) return res.status(500).json({ success: false, error: "Resposta inesperada." });
 
     const categories = data.map((c: any) => ({
       id: String(c.category_id),
@@ -1529,7 +1514,7 @@ app.post("/api/xtream/streams", async (req, res) => {
       if (!response.ok) return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
 
       const data = await response.json();
-      if (!Array.isArray(data)) return res.status(500).json({ success: false, error: "Formato de lista inválido retornado pelo provedor." });
+      if (!Array.isArray(data)) return res.status(500).json({ success: false, error: "Formato inválido." });
 
       streams = data;
       setInXtreamCache(cacheKey, streams);
@@ -1623,7 +1608,7 @@ app.post("/api/xtream/streams", async (req, res) => {
 
 app.post("/api/xtream/series-info", async (req, res) => {
   const xtream = parseXtreamCredentialsFromReq(req.body);
-  if (!xtream) return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
+  if (!xtream) return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas." });
 
   const { seriesId } = req.body;
   if (!seriesId) return res.status(400).json({ success: false, error: "ID da série ausente." });
