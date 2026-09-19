@@ -18,6 +18,17 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 // ----------------------------------------------------
 export type UserRole = 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' | 'admin' | 'user';
 
+interface VodProgressItem {
+  time: number;
+  duration?: number;
+  title: string;
+  posterUrl?: string;
+  streamUrl: string;
+  category?: string;
+  type: 'movie' | 'series';
+  updatedAt: string;
+}
+
 interface StoredUser {
   id: string;
   username: string;
@@ -36,6 +47,8 @@ interface StoredUser {
   createdByName?: string;
   notes?: string;
   lastSeen?: string;
+  favoriteIds?: string[];
+  vodProgress?: Record<string, VodProgressItem>;
 }
 
 function normalizeRole(role?: string): 'AdminMaster' | 'AdminRevenda' | 'UsuarioComum' {
@@ -86,6 +99,8 @@ function formatSafeUser(u: StoredUser) {
     createdByName: u.createdByName,
     notes: u.notes,
     lastSeen: u.lastSeen,
+    favoriteIds: u.favoriteIds || [],
+    vodProgress: u.vodProgress || {},
   };
 }
 
@@ -124,8 +139,6 @@ const DEFAULT_BRANDING: ClientBranding = {
   footerText: 'Transmissão HD • Canais ao Vivo • Player Rápido',
 };
 
-// IMPORTANTE: pasta data fica FORA do projeto (na home), pra o Vite não observar
-// as gravações e disparar reload infinito.
 const HOME_DIR = process.env.HOME || "/data/data/com.termux/files/home";
 const DATA_DIR = path.join(HOME_DIR, "rprtv-data");
 
@@ -316,6 +329,8 @@ function loadUsers(): StoredUser[] {
             ...u,
             role: r,
             expirationDate: u.expirationDate !== undefined ? u.expirationDate : null,
+            favoriteIds: Array.isArray(u.favoriteIds) ? u.favoriteIds : [],
+            vodProgress: (u.vodProgress && typeof u.vodProgress === 'object') ? u.vodProgress : {},
           };
         });
         if (changed) saveUsers(normalized);
@@ -333,6 +348,7 @@ function loadUsers(): StoredUser[] {
     passwordHash: hashPassword("admin", defaultSalt),
     role: "AdminMaster", createdAt: new Date().toISOString(),
     isBlocked: false, expirationDate: null,
+    favoriteIds: [], vodProgress: {},
   };
 
   const clientSalt = crypto.randomBytes(16).toString("hex");
@@ -344,6 +360,7 @@ function loadUsers(): StoredUser[] {
     passwordHash: hashPassword("123456", clientSalt),
     role: "UsuarioComum", createdAt: new Date().toISOString(),
     isBlocked: false, expirationDate: in30Days.toISOString().split("T")[0],
+    favoriteIds: [], vodProgress: {},
   };
 
   const initialUsers = [defaultAdmin, defaultClient];
@@ -603,6 +620,7 @@ app.post("/api/auth/register", (req, res) => {
     passwordHash, salt, role: "UsuarioComum",
     createdAt: new Date().toISOString(),
     isBlocked: false, expirationDate: trialDate,
+    favoriteIds: [], vodProgress: {},
   };
 
   users.push(newUser);
@@ -728,6 +746,91 @@ app.delete("/api/user/playlist", (req, res) => {
 });
 
 // ----------------------------------------------------
+// Favoritos (sincronizado no backend)
+// ----------------------------------------------------
+
+app.get("/api/user/favorites", (req, res) => {
+  const { user, error } = getAuthenticatedUser(req);
+  if (error || !user) return res.status(401).json({ success: false, error: error || "Não autenticado." });
+  return res.json({ success: true, favoriteIds: user.favoriteIds || [] });
+});
+
+app.post("/api/user/favorites", (req, res) => {
+  const { user, error } = getAuthenticatedUser(req);
+  if (error || !user) return res.status(401).json({ success: false, error: error || "Não autenticado." });
+
+  const { ids } = req.body;
+  if (!Array.isArray(ids)) {
+    return res.status(400).json({ success: false, error: "Campo 'ids' deve ser uma lista." });
+  }
+
+  const clean = ids
+    .filter((x: any) => typeof x === "string" && x.length > 0 && x.length < 500)
+    .slice(0, 5000); // limite de 5000 favoritos
+
+  const users = loadUsers();
+  const index = users.findIndex(u => u.id === user.id);
+  if (index === -1) return res.status(404).json({ success: false, error: "Usuário não localizado." });
+
+  users[index].favoriteIds = clean;
+  saveUsers(users);
+
+  return res.json({ success: true, favoriteIds: clean });
+});
+
+// ----------------------------------------------------
+// Progresso de VOD (continuar assistindo)
+// ----------------------------------------------------
+
+app.get("/api/user/vod-progress", (req, res) => {
+  const { user, error } = getAuthenticatedUser(req);
+  if (error || !user) return res.status(401).json({ success: false, error: error || "Não autenticado." });
+  return res.json({ success: true, progress: user.vodProgress || {} });
+});
+
+app.post("/api/user/vod-progress", (req, res) => {
+  const { user, error } = getAuthenticatedUser(req);
+  if (error || !user) return res.status(401).json({ success: false, error: error || "Não autenticado." });
+
+  const { id, time, duration, title, posterUrl, streamUrl, category, type } = req.body;
+  if (!id || typeof id !== "string" || typeof time !== "number") {
+    return res.status(400).json({ success: false, error: "Campos 'id' e 'time' são obrigatórios." });
+  }
+
+  const users = loadUsers();
+  const index = users.findIndex(u => u.id === user.id);
+  if (index === -1) return res.status(404).json({ success: false, error: "Usuário não localizado." });
+
+  const progress = users[index].vodProgress || {};
+
+  // Se passou de 95% do filme, considera "assistido" e remove o progresso
+  const dur = typeof duration === "number" ? duration : 0;
+  if (dur > 0 && time / dur > 0.95) {
+    delete progress[id];
+  } else {
+    progress[id] = {
+      time,
+      duration: dur,
+      title: typeof title === "string" ? title.slice(0, 200) : "Sem título",
+      posterUrl: typeof posterUrl === "string" ? posterUrl : undefined,
+      streamUrl: typeof streamUrl === "string" ? streamUrl : "",
+      category: typeof category === "string" ? category : undefined,
+      type: type === 'series' ? 'series' : 'movie',
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  // Mantém só os últimos 20 itens
+  const entries = Object.entries(progress)
+    .sort((a: any, b: any) => new Date(b[1].updatedAt).getTime() - new Date(a[1].updatedAt).getTime())
+    .slice(0, 20);
+  users[index].vodProgress = Object.fromEntries(entries);
+  saveUsers(users);
+
+  return res.json({ success: true, progress: users[index].vodProgress });
+});
+
+// ----------------------------------------------------
 // Admin Management Endpoints
 // ----------------------------------------------------
 
@@ -817,6 +920,7 @@ app.post("/api/admin/users", (req, res) => {
     createdBy: adminUser.username,
     createdByName: adminUser.name,
     notes: typeof notes === "string" && notes.trim() ? notes.trim() : undefined,
+    favoriteIds: [], vodProgress: {},
   };
 
   users.push(newUser);
