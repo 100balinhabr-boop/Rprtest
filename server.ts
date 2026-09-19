@@ -124,7 +124,11 @@ const DEFAULT_BRANDING: ClientBranding = {
   footerText: 'Transmissão HD • Canais ao Vivo • Player Rápido',
 };
 
-const DATA_DIR = path.join(process.cwd(), "data");
+// IMPORTANTE: pasta data fica FORA do projeto (na home), pra o Vite não observar
+// as gravações e disparar reload infinito.
+const HOME_DIR = process.env.HOME || "/data/data/com.termux/files/home";
+const DATA_DIR = path.join(HOME_DIR, "rprtv-data");
+
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
@@ -651,7 +655,6 @@ app.get("/api/auth/me", (req, res) => {
     });
   }
 
-  // IMPORTANTE: não grava nada no disco aqui — evita loop de reload do Vite
   return res.json({ success: true, user: formatSafeUser(user) });
 });
 
@@ -1669,6 +1672,7 @@ async function startServer() {
         middlewareMode: true,
         watch: {
           ignored: [
+            '**/rprtv-data/**',
             '**/data/**',
             '**/*.log',
             '**/node_modules/**',
@@ -1690,6 +1694,7 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[IPTV Server] Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[IPTV Server] Dados salvos em: ${DATA_DIR}`);
   });
 }
 
