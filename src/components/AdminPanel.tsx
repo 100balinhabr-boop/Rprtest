@@ -7,7 +7,7 @@ import {
   UserCheck, UserX, TrendingUp, LayoutDashboard, Settings as SettingsIcon,
   LogOut, ChevronRight, Play, Menu, Shield, Sparkles, Check,
   Palette, GripVertical, Save, Upload, Image as ImageIcon, Type, Palette as PaletteIcon,
-  Tag, ScrollText, Activity, Wifi
+  Tag, ScrollText, Activity
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -143,12 +143,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
   const [savingAppearance, setSavingAppearance] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
-  // Logs + Online
+  // Logs
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [loadingAudit, setLoadingAudit] = useState(false);
-  const [onlineCount, setOnlineCount] = useState<number>(0);
-  const [onlineUsers, setOnlineUsers] = useState<UserAccount[]>([]);
-  const [loadingOnline, setLoadingOnline] = useState(false);
   const [auditFilter, setAuditFilter] = useState<string>('all');
 
   const currentAdminRole = normalizeUserRole(currentAdmin.role);
@@ -235,39 +232,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
     }
   };
 
-  const fetchOnline = async () => {
-    setLoadingOnline(true);
-    try {
-      const token = getAuthToken();
-      const res = await fetch('/api/admin/online', { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      if (data.success) {
-        setOnlineCount(data.count || 0);
-        setOnlineUsers(Array.isArray(data.users) ? data.users : []);
-      }
-    } catch {
-      // silencioso
-    } finally {
-      setLoadingOnline(false);
-    }
-  };
-
   useEffect(() => {
     fetchUsers();
-    fetchOnline();
   }, []);
 
-  // Se entrar na seção de logs, busca audit
   useEffect(() => {
     if (section === 'logs') fetchAudit();
-  }, [section]);
-
-  // Auto-refresh do online a cada 30s
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (section === 'dashboard') fetchOnline();
-    }, 30000);
-    return () => clearInterval(interval);
   }, [section]);
 
   useEffect(() => {
@@ -619,7 +589,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
         <div onClick={() => setSidebarOpen(false)} className="fixed inset-0 bg-black/60 z-40 lg:hidden" />
       )}
 
-      {/* SIDEBAR */}
       <aside className={`fixed lg:sticky top-0 left-0 h-screen w-72 bg-[#0b0b12] border-r border-red-900/30 flex flex-col z-50 transition-transform ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="px-5 py-5 border-b border-red-900/20 flex items-center gap-3">
           <div
@@ -693,7 +662,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
         </div>
       </aside>
 
-      {/* MAIN */}
       <main className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
         <header className="sticky top-0 z-30 bg-[#0b0b12]/95 backdrop-blur border-b border-red-900/20 px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -702,18 +670,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             </button>
             <h2 className="text-lg font-black text-white truncate">{sectionTitle}</h2>
           </div>
-          <div className="flex items-center gap-2">
-            {section === 'dashboard' && (
-              <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/40 border border-emerald-700/40">
-                <Wifi className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                <span className="text-xs font-bold text-emerald-300">{onlineCount} online</span>
-              </div>
-            )}
-            <button type="button" onClick={section === 'logs' ? fetchAudit : fetchUsers} disabled={loading || loadingAudit} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800/60 hover:bg-slate-700 text-slate-200 border border-slate-700/60">
-              <RefreshCw className={`w-3.5 h-3.5 ${(loading || loadingAudit) ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Atualizar</span>
-            </button>
-          </div>
+          <button type="button" onClick={section === 'logs' ? fetchAudit : fetchUsers} disabled={loading || loadingAudit} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800/60 hover:bg-slate-700 text-slate-200 border border-slate-700/60">
+            <RefreshCw className={`w-3.5 h-3.5 ${(loading || loadingAudit) ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Atualizar</span>
+          </button>
         </header>
 
         {feedbackMsg && (
@@ -727,103 +687,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
         )}
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-          {/* DASHBOARD */}
           {section === 'dashboard' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-                {[
-                  { label: isRevenda ? 'Meus Clientes Ativos' : 'Clientes Ativos', value: activeClients, color: 'emerald', icon: UserCheck, target: 'clients' as Section },
-                  { label: 'Vencendo 7d', value: expiring7Users, color: 'amber', icon: TrendingUp, target: 'clients' as Section },
-                  { label: 'Vencidos', value: expiredUsers, color: 'rose', icon: Clock, target: 'clients' as Section },
-                  { label: 'Revendas', value: revendaUsers, color: 'blue', icon: Briefcase, target: 'revendas' as Section, masterOnly: true },
-                  { label: 'Admins', value: masterUsers, color: 'amber', icon: Crown, target: 'admins' as Section, masterOnly: true },
-                  { label: 'Bloqueados', value: blockedUsersCount, color: 'slate', icon: UserX, target: null as any },
-                ].filter(c => !(c as any).masterOnly || isMaster).map((card, i) => {
-                  const Icon = card.icon;
-                  const colorMap: any = {
-                    emerald: 'from-emerald-950/40 border-emerald-800/40 text-emerald-400',
-                    amber: 'from-amber-950/40 border-amber-800/40 text-amber-400',
-                    rose: 'from-rose-950/40 border-rose-800/40 text-rose-400',
-                    blue: 'from-blue-950/40 border-blue-800/40 text-blue-400',
-                    slate: 'from-slate-900/60 border-slate-800/60 text-slate-400',
-                  };
-                  return (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => card.target && setSection(card.target as Section)}
-                      disabled={!card.target}
-                      className={`text-left p-5 rounded-2xl bg-gradient-to-br ${colorMap[card.color]} to-[#0b0b12] border transition ${card.target ? 'cursor-pointer hover:scale-[1.02]' : 'cursor-default'}`}
-                    >
-                      <div className="flex items-start justify-between mb-3">
-                        <div className={`w-12 h-12 rounded-xl bg-${card.color}-500/15 border border-${card.color}-500/30 flex items-center justify-center`}>
-                          <Icon className={`w-6 h-6`} />
-                        </div>
-                        {card.target && <ChevronRight className="w-5 h-5 text-slate-600" />}
-                      </div>
-                      <p className="text-xs uppercase font-bold tracking-wider">{card.label}</p>
-                      <p className="text-4xl font-black text-white mt-1">{card.value}</p>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Online agora */}
-              <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-800/60 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-emerald-400" />
-                    <h3 className="text-sm font-bold text-white">Assistindo agora</h3>
-                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-[10px] font-bold text-emerald-300">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                      {onlineCount} ativos
-                    </span>
-                  </div>
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+              {[
+                { label: isRevenda ? 'Meus Clientes Ativos' : 'Clientes Ativos', value: activeClients, color: 'emerald', icon: UserCheck, target: 'clients' as Section },
+                { label: 'Vencendo 7d', value: expiring7Users, color: 'amber', icon: TrendingUp, target: 'clients' as Section },
+                { label: 'Vencidos', value: expiredUsers, color: 'rose', icon: Clock, target: 'clients' as Section },
+                { label: 'Revendas', value: revendaUsers, color: 'blue', icon: Briefcase, target: 'revendas' as Section, masterOnly: true },
+                { label: 'Admins', value: masterUsers, color: 'amber', icon: Crown, target: 'admins' as Section, masterOnly: true },
+                { label: 'Bloqueados', value: blockedUsersCount, color: 'slate', icon: UserX, target: null as any },
+              ].filter(c => !(c as any).masterOnly || isMaster).map((card, i) => {
+                const Icon = card.icon;
+                const colorMap: any = {
+                  emerald: 'from-emerald-950/40 border-emerald-800/40 text-emerald-400',
+                  amber: 'from-amber-950/40 border-amber-800/40 text-amber-400',
+                  rose: 'from-rose-950/40 border-rose-800/40 text-rose-400',
+                  blue: 'from-blue-950/40 border-blue-800/40 text-blue-400',
+                  slate: 'from-slate-900/60 border-slate-800/60 text-slate-400',
+                };
+                return (
                   <button
+                    key={i}
                     type="button"
-                    onClick={fetchOnline}
-                    disabled={loadingOnline}
-                    className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                    onClick={() => card.target && setSection(card.target as Section)}
+                    disabled={!card.target}
+                    className={`text-left p-5 rounded-2xl bg-gradient-to-br ${colorMap[card.color]} to-[#0b0b12] border transition ${card.target ? 'cursor-pointer hover:scale-[1.02]' : 'cursor-default'}`}
                   >
-                    <RefreshCw className={`w-3 h-3 ${loadingOnline ? 'animate-spin' : ''}`} />
-                    <span className="hidden sm:inline">Atualizar</span>
+                    <div className="flex items-start justify-between mb-3">
+                      <div className={`w-12 h-12 rounded-xl bg-${card.color}-500/15 border border-${card.color}-500/30 flex items-center justify-center`}>
+                        <Icon className={`w-6 h-6`} />
+                      </div>
+                      {card.target && <ChevronRight className="w-5 h-5 text-slate-600" />}
+                    </div>
+                    <p className="text-xs uppercase font-bold tracking-wider">{card.label}</p>
+                    <p className="text-4xl font-black text-white mt-1">{card.value}</p>
                   </button>
-                </div>
-                {onlineUsers.length === 0 ? (
-                  <div className="py-10 text-center text-slate-500">
-                    <Wifi className="w-7 h-7 mx-auto mb-2 opacity-50" />
-                    <p className="text-xs">Nenhum cliente logado nos últimos 5 minutos</p>
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-800/60">
-                    {onlineUsers.slice(0, 10).map(u => {
-                      const role = normalizeUserRole(u.role);
-                      return (
-                        <div key={u.id} className="px-5 py-3 flex items-center gap-3">
-                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-black shrink-0 border ${
-                            role === 'AdminMaster' ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
-                            : role === 'AdminRevenda' ? 'bg-blue-500/15 border-blue-500/40 text-blue-300'
-                            : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                          }`}>
-                            {role === 'AdminMaster' ? <Crown className="w-4 h-4" /> : role === 'AdminRevenda' ? <Briefcase className="w-4 h-4" /> : (u.name?.charAt(0).toUpperCase() || 'U')}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-bold text-white truncate">{u.name}</p>
-                            <p className="text-[10px] text-slate-400 font-mono truncate">@{u.username}</p>
-                          </div>
-                          <span className="text-[10px] text-emerald-300 font-mono shrink-0">
-                            {u.lastSeen ? formatRelativeTime(u.lastSeen) : ''}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+                );
+              })}
             </div>
           )}
 
-          {/* LOGS */}
           {section === 'logs' && isMaster && (
             <div className="space-y-4">
               <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl p-4">
@@ -901,7 +804,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             </div>
           )}
 
-          {/* APARÊNCIA */}
           {section === 'appearance' && (
             <div className="max-w-3xl mx-auto space-y-5">
               <div className="p-5 rounded-2xl border flex items-center gap-3" style={{ background: `linear-gradient(135deg, ${branding.accentColor}20, #0f0f17)`, borderColor: `${branding.accentColor}60` }}>
@@ -923,7 +825,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
               {isRevenda && (
                 <div className="p-4 rounded-2xl bg-blue-950/20 border border-blue-800/40">
                   <p className="text-xs text-blue-200 leading-relaxed">
-                    <strong>Sua marca, seus clientes:</strong> o que você configurar aqui só aparece pros clientes que <strong>você cadastrou</strong>. Os clientes do AdminMaster continuam vendo o app original.
+                    <strong>Sua marca, seus clientes:</strong> o que você configurar aqui só aparece pros clientes que <strong>você cadastrou</strong>.
                   </p>
                 </div>
               )}
@@ -946,8 +848,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                       onChange={e => setBranding(prev => ({ ...prev, appName: e.target.value.slice(0, 30) }))}
                       maxLength={30}
                       placeholder="RPR TV"
-                      className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm font-bold text-white placeholder-slate-500 focus:outline-none focus:ring-2"
-                      style={{ outlineColor: branding.accentColor }}
+                      className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm font-bold text-white placeholder-slate-500 focus:outline-none"
                     />
                     <p className="text-[10px] text-slate-500 mt-1 font-mono">{branding.appName.length}/30 caracteres</p>
                   </div>
@@ -967,7 +868,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                           style={{
                             background: c.value,
                             borderColor: branding.accentColor === c.value ? '#fff' : 'transparent',
-                            boxShadow: branding.accentColor === c.value ? `0 0 20px ${c.value}80` : 'none'
                           }}
                           title={c.name}
                         >
@@ -1123,10 +1023,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                             maxLength={20}
                             disabled={isFixed}
                             placeholder="NOME"
-                            className={`w-full bg-[#15151f] border rounded-xl px-3 py-2 text-sm font-bold text-white placeholder-slate-500 focus:outline-none focus:ring-2 ${
+                            className={`w-full bg-[#15151f] border rounded-xl px-3 py-2 text-sm font-bold text-white placeholder-slate-500 focus:outline-none ${
                               isFixed ? 'border-slate-800 opacity-60 cursor-not-allowed' : 'border-slate-700/80'
                             }`}
-                            style={!isFixed ? { outlineColor: branding.accentColor } : {}}
                           />
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-[10px] text-slate-500 font-mono">
@@ -1173,7 +1072,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                   onClick={handleSaveAppearance}
                   disabled={savingAppearance}
                   className="px-5 py-2.5 rounded-xl text-sm font-bold text-white shadow-lg flex items-center gap-2 disabled:opacity-50 transition"
-                  style={{ background: `linear-gradient(135deg, ${branding.accentColor}, ${branding.accentColor}cc)`, boxShadow: `0 10px 25px -8px ${branding.accentColor}90` }}
+                  style={{ background: `linear-gradient(135deg, ${branding.accentColor}, ${branding.accentColor}cc)` }}
                 >
                   {savingAppearance ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                   {savingAppearance ? 'Salvando...' : 'Salvar Alterações'}
@@ -1182,7 +1081,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             </div>
           )}
 
-          {/* CREATE */}
           {section === 'create' && (
             <form onSubmit={handleCreate} className="max-w-2xl mx-auto space-y-4 bg-[#0f0f17] border border-slate-800/60 rounded-2xl p-5">
               <div className="flex items-center gap-2 mb-2">
@@ -1193,11 +1091,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">Nome Completo</label>
-                  <input type="text" value={formName} onChange={e => setFormName(e.target.value)} placeholder="João Silva" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2" style={{ outlineColor: branding.accentColor }} />
+                  <input type="text" value={formName} onChange={e => setFormName(e.target.value)} placeholder="João Silva" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">Login (@)</label>
-                  <input type="text" value={formUsername} onChange={e => setFormUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder="joaosilva" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 font-mono" style={{ outlineColor: branding.accentColor }} />
+                  <input type="text" value={formUsername} onChange={e => setFormUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder="joaosilva" required className="w-full bg-[#15151f] border border-slate-700/80 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none font-mono" />
                 </div>
               </div>
 
@@ -1270,7 +1168,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             </form>
           )}
 
-          {/* SETTINGS */}
           {section === 'settings' && isMaster && (
             <div className="max-w-2xl mx-auto space-y-4">
               <div className="p-5 rounded-2xl bg-[#0f0f17] border border-slate-800/60 flex items-start justify-between gap-4">
@@ -1285,7 +1182,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
             </div>
           )}
 
-          {/* LISTAS */}
           {(section === 'clients' || section === 'revendas' || section === 'admins') && (
             <div className="space-y-4">
               <div className="bg-[#0f0f17] border border-slate-800/60 rounded-2xl p-4 space-y-3">
@@ -1375,7 +1271,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                                   <span
                                     className="px-2 py-0.5 rounded-full border text-[10px] font-bold flex items-center gap-1"
                                     style={{ background: `${branding.accentColor}20`, borderColor: `${branding.accentColor}50`, color: branding.accentColor }}
-                                    title={`Cliente criado pela revenda @${user.createdBy}`}
                                   >
                                     <Tag className="w-2.5 h-2.5" />
                                     @{user.createdBy}
@@ -1392,12 +1287,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
                               <div className="flex items-center gap-3 text-[11px] text-slate-400 mt-1 flex-wrap">
                                 {user.email && <span className="truncate">{user.email}</span>}
                                 {user.createdAt && <span className="text-[10px]">Cadastrado {new Date(user.createdAt).toLocaleDateString('pt-BR')}</span>}
-                                {user.lastSeen && (
-                                  <span className="text-[10px] text-emerald-400/80 flex items-center gap-1">
-                                    <Wifi className="w-2.5 h-2.5" />
-                                    Visto {formatRelativeTime(user.lastSeen)}
-                                  </span>
-                                )}
                               </div>
                             </div>
                           </div>
@@ -1431,7 +1320,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentAdmin, onClose, o
         </div>
       </main>
 
-      {/* EDIT MODAL */}
       {editingUser && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3">
           <form onSubmit={handleSaveEdit} className="w-full max-w-lg bg-[#0f0f17] border border-blue-500/40 rounded-2xl shadow-2xl overflow-hidden">
