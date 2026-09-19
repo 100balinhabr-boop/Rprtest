@@ -559,6 +559,7 @@ app.post("/api/auth/login", (req, res) => {
   sessions.set(token, { userId: user.id, expiresAt });
   saveSessions(sessions);
 
+  // Marca lastSeen APENAS no login (não causa loop porque roda 1x)
   const idx = users.findIndex(u => u.id === user.id);
   if (idx !== -1) {
     users[idx].lastSeen = new Date().toISOString();
@@ -664,12 +665,7 @@ app.get("/api/auth/me", (req, res) => {
     });
   }
 
-  const idx = users.findIndex(u => u.id === user.id);
-  if (idx !== -1) {
-    users[idx].lastSeen = new Date().toISOString();
-    saveUsers(users);
-  }
-
+  // NÃO grava lastSeen aqui — evita loop de reload do Vite/tsx
   return res.json({ success: true, user: formatSafeUser(user) });
 });
 
@@ -1234,8 +1230,6 @@ app.post("/api/load-playlist", async (req, res) => {
   
   if (xtream && mode === "live") {
     try {
-      console.log(`[Xtream API] Carregando canais ao vivo de ${xtream.baseUrl} para o usuário ${xtream.username}...`);
-      
       const [catsRes, streamsRes] = await Promise.all([
         fetch(`${xtream.baseUrl}/player_api.php?username=${xtream.username}&password=${xtream.password}&action=get_live_categories`, {
           headers: { "User-Agent": "IPTVSmartersPlayer" },
@@ -1262,14 +1256,12 @@ app.post("/api/load-playlist", async (req, res) => {
 
           for (const s of streamsData) {
             const group = catMap.get(String(s.category_id)) || "CANAIS AO VIVO";
-            const channelId = `xtream_${s.stream_id || channels.length + 1}`;
-            
             const ext = preferFormat === "m3u8" ? "m3u8" : "ts";
             const base = xtream.baseUrl.replace(/\/+$/, "");
             const directStreamUrl = `${base}/${xtream.username}/${xtream.password}/${s.stream_id}.${ext}`;
 
             channels.push({
-              id: channelId,
+              id: `xtream_${s.stream_id || channels.length + 1}`,
               name: s.name || `Canal ${s.stream_id}`,
               streamUrl: directStreamUrl,
               logoUrl: s.stream_icon || "",
@@ -1291,13 +1283,13 @@ app.post("/api/load-playlist", async (req, res) => {
             source: "xtream_codes_api",
             totalLiveChannels: streamsData.length,
             loadedCount: channels.length,
-            message: `Carregados todos os ${channels.length} canais de TV ao vivo com sucesso via API Xtream!`,
+            message: `Carregados todos os ${channels.length} canais de TV ao vivo!`,
             channels, groups
           });
         }
       }
     } catch (e: any) {
-      console.warn(`[Xtream API fallback] Erro na API Xtream (${e.message})...`);
+      console.warn(`[Xtream API fallback] ${e.message}`);
     }
   }
 
@@ -1407,14 +1399,14 @@ app.post("/api/load-playlist", async (req, res) => {
       source: "m3u_stream",
       loadedCount: channels.length,
       stats: { live: countLive, movies: countMovies, series: countSeries, total: channels.length },
-      message: `Lista inteira carregada com sucesso! ${channels.length} itens totais.`,
+      message: `Lista carregada! ${channels.length} itens totais.`,
       channels, groups
     });
 
   } catch (err: any) {
     console.error("[M3U Load Error]", err);
     return res.status(500).json({
-      error: `Falha ao processar a lista: ${err.message}. Verifique a conexão com o provedor.`
+      error: `Falha ao processar a lista: ${err.message}.`
     });
   }
 });
@@ -1469,7 +1461,7 @@ app.post("/api/xtream/categories", async (req, res) => {
       signal: AbortSignal.timeout(15000),
     });
 
-    if (!response.ok) return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
+    if (!response.ok) return res.status(response.status).json({ success: false, error: `Status ${response.status}` });
 
     const data = await response.json();
     if (!Array.isArray(data)) return res.status(500).json({ success: false, error: "Resposta inesperada." });
@@ -1482,14 +1474,13 @@ app.post("/api/xtream/categories", async (req, res) => {
     setInXtreamCache(cacheKey, categories);
     return res.json({ success: true, source: "network", type, categories });
   } catch (err: any) {
-    console.error("[Xtream Categories Error]", err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
 app.post("/api/xtream/streams", async (req, res) => {
   const xtream = parseXtreamCredentialsFromReq(req.body);
-  if (!xtream) return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas na URL." });
+  if (!xtream) return res.status(400).json({ success: false, error: "Credenciais Xtream não encontradas." });
 
   const { type = "live", categoryId, search, preferFormat = "m3u8", page = 1, limit = 100 } = req.body;
   let action = "get_live_streams";
@@ -1511,7 +1502,7 @@ app.post("/api/xtream/streams", async (req, res) => {
         signal: AbortSignal.timeout(25000),
       });
 
-      if (!response.ok) return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
+      if (!response.ok) return res.status(response.status).json({ success: false, error: `Status ${response.status}` });
 
       const data = await response.json();
       if (!Array.isArray(data)) return res.status(500).json({ success: false, error: "Formato inválido." });
@@ -1519,7 +1510,6 @@ app.post("/api/xtream/streams", async (req, res) => {
       streams = data;
       setInXtreamCache(cacheKey, streams);
     } catch (err: any) {
-      console.error("[Xtream Streams Error]", err.message);
       return res.status(500).json({ success: false, error: err.message });
     }
   }
@@ -1624,13 +1614,12 @@ app.post("/api/xtream/series-info", async (req, res) => {
       signal: AbortSignal.timeout(15000),
     });
 
-    if (!response.ok) return res.status(response.status).json({ success: false, error: `Servidor retornou status ${response.status}` });
+    if (!response.ok) return res.status(response.status).json({ success: false, error: `Status ${response.status}` });
 
     const data = await response.json();
     setInXtreamCache(cacheKey, data);
     return res.json({ success: true, source: "network", data });
   } catch (err: any) {
-    console.error("[Xtream Series Info Error]", err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
